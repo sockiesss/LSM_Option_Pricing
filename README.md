@@ -1,8 +1,11 @@
 1. Git Commit Format Example for README
 
 feat: Adds a new feature or core functionality.
+
 fix: Fixes a bug or an error in the code.
+
 docs: Updates the documentation, such as the README.
+
 test: Adds or updates testing scripts.
 
 2. Tentative Project Plan
