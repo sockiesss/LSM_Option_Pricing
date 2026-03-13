@@ -1,3 +1,4 @@
+# Generate Geometric Brownian Motion paths for Stock Price
 import numpy as np
 
 class GeometricBrownianMotion:
@@ -34,8 +35,16 @@ class GeometricBrownianMotion:
         
         paths = np.zeros((n_paths, n_steps + 1))
         paths[:, 0] = self.S0
-        
-        # TODO: drift, diffusion, paths
+
+        Z = rng.normal(size = (n_paths, n_steps))
+
+        drift = (self.r - self.q - 0.5 * (self.sigma**2)) * dt
+        diffusion = self.sigma * np.sqrt(dt)
+
+        for t in range(1, n_steps + 1):
+            paths[:, t] = paths[:, t-1] * np.exp(
+                drift + diffusion * Z[:, t-1]
+            )
         
         return time_grid, paths
 
