@@ -1,4 +1,5 @@
 import numpy as np
+from control_variate import *
 
 class LeastSquaresMonteCarlo:
     """
@@ -12,6 +13,7 @@ class LeastSquaresMonteCarlo:
     def pricer(self, T: float, n_steps: int, n_paths: int, 
                rng: np.random.Generator = None,
                use_antithetic: bool = False,
+               control_variate: str = 'european_at_exercise',
                create_features=None,
                cache: bool = False) -> tuple:
         """
@@ -42,6 +44,11 @@ class LeastSquaresMonteCarlo:
         # 2. Cash flow matrix: shape (n_paths, n_steps+1) to align with time_grid and paths
         cashflow_matrix = np.zeros((n_paths, n_steps + 1), dtype=np.float64)
         cashflow_matrix[:, -1] = dsc_cashflow  # Copy terminal payoffs
+        
+        # dataframe for tracking stopping time / stopping spot (control variate part)
+        exercise_time = np.full(n_paths, T, dtype=np.float64)
+        exercise_spot = paths[:, -1].copy()
+        exercise_index = np.full(n_paths, n_steps, dtype=int)
 
         for t in range(n_steps - 2, -1, -1):
             # Discount the cash flow from the next step back to the current step
@@ -81,20 +88,88 @@ class LeastSquaresMonteCarlo:
             cashflow_matrix[exercise_mask, t] = immediate_payoff[exercise_mask]
             # 2. For exercised paths, set future cashflow to zero since the option is exercised
             cashflow_matrix[exercise_mask, t+1:] = 0.0
+            
+            # record stopping rule
+            if control_variate == 'european_at_exercise':
+                exercise_time[exercise_mask] = time_grid[t]
+                exercise_spot[exercise_mask] = paths[exercise_mask, t]
+                exercise_index[exercise_mask] = t
            
             # Update discounted cashflow for the next iteration
             dsc_cashflow = np.where(exercise_mask, immediate_payoff, dsc_cashflow)
-        
+
         price = np.mean(dsc_cashflow)
         if n_paths > 1:
             stderr = np.std(dsc_cashflow, ddof=1) / np.sqrt(n_paths)
         else:
             stderr = 0.0
 
+        # Optional European control variate
+        if control_variate is not None:
+            if create_features is not None:
+                raise ValueError("European control variate is currently only supported for single-asset options.")
+
+            if paths.ndim != 2:
+                raise ValueError("European control variate is currently only supported for single-asset paths.")
+
+            required_attrs = ["strike", "option_type"]
+            for attr in required_attrs:
+                if not hasattr(self.payoff_function, attr):
+                    raise ValueError(f"payoff_function must have attribute '{attr}' for European control variate.")
+            
+            S0 = float(np.atleast_1d(self.process.S0)[0])
+            r = float(self.process.r)
+            q = float(np.atleast_1d(self.process.q)[0])
+            sigma = float(np.atleast_1d(self.process.sigma)[0])
+            K = float(self.payoff_function.strike)
+            option_type = self.payoff_function.option_type.lower()
+
+            x_samples = dsc_cashflow
+            
+            if control_variate == "european_at_maturity":
+                # Y_i = discounted European payoff at maturity
+                y_samples = european_discounted_payoff(paths[:, -1], K, r, T, option_type)
+                y_expectation = bs_european_price(S0, K, r, q, sigma, T, option_type)
+            elif control_variate == "european_at_exercise":
+                # Y_i = exp(-r tau_i) * C(S_tau_i, T - tau_i)
+                # E[Y] = C(S0, T)
+                remaining_T = np.maximum(T - exercise_time, 0.0)
+
+                # calculate european price for every exercising time
+                euro_value_at_tau = np.array([
+                    bs_european_price(
+                        S0=exercise_spot[i],
+                        K=K,
+                        r=r,
+                        q=q,
+                        sigma=sigma,
+                        T=remaining_T[i],
+                        option_type=option_type
+                    )
+                    for i in range(n_paths)
+                ])
+                
+                y_samples = np.exp(-r * exercise_time) * euro_value_at_tau
+                y_expectation = bs_european_price(S0, K, r, q, sigma, T, option_type)
+            
+            else:
+                raise ValueError("control_variate must be one of: None, 'european_at_maturity', 'european_at_exercise'")
+            
+            price, stderr, beta = apply_control_variate(x_samples, y_samples, y_expectation)
+
+            if cache:
+                self._cached_cv_beta = beta
+                self._cached_euro_closed = y_expectation
+                self._cached_exercise_time = exercise_time
+                self._cached_exercise_spot = exercise_spot
+                self._cached_exercise_index = exercise_index
+                self._cached_paths = paths
+                self._cached_cv_samples = y_samples
+
         # Cache cash flow matrix only if requested
         if cache:
             self._cached_cashflow = cashflow_matrix
-        
+
         return price, stderr
     
     def get_cashflow(self) -> np.ndarray:
