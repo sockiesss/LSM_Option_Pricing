@@ -1,6 +1,5 @@
-from scipy.stats import norm
 import numpy as np
-from payoffs import VanillaPayoff
+from LSM.payoffs import VanillaPayoff
 
 class BinomialTreeEngine:
     """
@@ -45,6 +44,15 @@ class BinomialTreeEngine:
         d = 1.0 / u
         disc = np.exp(-r * dt)
         growth = np.exp((r - q) * dt)
+        if u == d:  # sigma == 0: deterministic case, price via discounted forward
+            idx = np.arange(n_steps + 1)
+            ST = S0 * (growth ** n_steps) * np.ones(n_steps + 1)
+            option_values = self.payoff_function(ST)
+            price = float(disc ** n_steps * option_values[0])
+            if cache:
+                self._cached_terminal_spots = ST
+                self._cached_price_tree_last_layer = option_values.copy()
+            return price
         p = (growth - d) / (u - d)
 
         # Terminal stock prices at maturity

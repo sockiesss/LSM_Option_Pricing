@@ -2,36 +2,46 @@
 import numpy as np
 from scipy.stats import norm
 
-def bs_european_price(S0: float, K: float, r: float, q: float,
-                      sigma: float, T: float, option_type: str) -> float:
+def bs_european_price(S0, K: float, r: float, q: float,
+                      sigma: float, T, option_type: str):
     """
-    Black-Scholes closed-form price for European call/put
+    Black-Scholes closed-form price for European call/put.
+    S0 and T accept scalars or arrays; returns float or ndarray accordingly.
     """
     option_type = option_type.lower()
     if option_type not in {"call", "put"}:
         raise ValueError("option_type must be 'call' or 'put'")
 
-    # Handle maturity = 0
-    if T <= 0:
-        if option_type == "call":
-            return max(S0 - K, 0.0)
-        else:
-            return max(K - S0, 0.0)
+    S0 = np.asarray(S0, dtype=float)
+    T  = np.asarray(T,  dtype=float)
+    scalar = S0.ndim == 0 and T.ndim == 0
+    S0, T = np.atleast_1d(S0), np.atleast_1d(T)
 
-    # Optional: handle sigma = 0 separately
-    if sigma <= 0:
-        forward_intrinsic = S0 * np.exp(-q * T) - K * np.exp(-r * T)
-        if option_type == "call":
-            return max(forward_intrinsic, 0.0)
-        else:
-            return max(-forward_intrinsic, 0.0)
-
-    d1 = (np.log(S0 / K) + (r - q + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
-    d2 = d1 - sigma * np.sqrt(T)
-
+    # T <= 0: intrinsic value
     if option_type == "call":
-        return S0 * np.exp(-q * T) * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
-    return K * np.exp(-r * T) * norm.cdf(-d2) - S0 * np.exp(-q * T) * norm.cdf(-d1)
+        at_expiry = np.maximum(S0 - K, 0.0)
+    else:
+        at_expiry = np.maximum(K - S0, 0.0)
+
+    # sigma = 0: deterministic discounted forward
+    Tpos = np.maximum(T, 0.0)
+    forward_intrinsic = S0 * np.exp(-q * Tpos) - K * np.exp(-r * Tpos)
+    if option_type == "call":
+        sigma_zero = np.maximum(forward_intrinsic, 0.0)
+    else:
+        sigma_zero = np.maximum(-forward_intrinsic, 0.0)
+
+    # Normal BS formula; safe_T avoids 0/0 on T=0 paths
+    safe_T = np.where(T > 0, T, 1.0)
+    d1 = (np.log(S0 / K) + (r - q + 0.5 * sigma**2) * safe_T) / (sigma * np.sqrt(safe_T))
+    d2 = d1 - sigma * np.sqrt(safe_T)
+    if option_type == "call":
+        bs = S0 * np.exp(-q * safe_T) * norm.cdf(d1) - K * np.exp(-r * safe_T) * norm.cdf(d2)
+    else:
+        bs = K * np.exp(-r * safe_T) * norm.cdf(-d2) - S0 * np.exp(-q * safe_T) * norm.cdf(-d1)
+
+    result = np.where(T <= 0, at_expiry, np.where(sigma <= 0, sigma_zero, bs))
+    return float(result) if scalar else result
 
 
 def european_discounted_payoff(ST: np.ndarray, K: float, r: float, T: float,

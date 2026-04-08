@@ -217,3 +217,16 @@ __marimo__/
 # IDE config
 .vscode/
 .idea/
+
+
+# macOS / OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Private files
+notebooks/tests_iris_private.ipynb

@@ -1,4 +1,5 @@
 # Generate Geometric Brownian Motion paths for Stock Price
+import warnings
 import numpy as np
 
 class GeometricBrownianMotion:
@@ -37,7 +38,8 @@ class GeometricBrownianMotion:
 
     def simulate(self, T: float, n_steps: int, n_paths: int, 
                  rng: np.random.Generator = None,
-                 use_antithetic: bool = False) -> tuple:
+                 use_antithetic: bool = False,
+                 times=None) -> tuple:
         """
         Simulate GBM paths.
         
@@ -47,6 +49,8 @@ class GeometricBrownianMotion:
             n_paths: number of paths (if use_antithetic=True, generates n_paths/2 pairs)
             rng: random number generator
             use_antithetic: if True, generate antithetic pairs for variance reduction
+            times: optional 1-d array of monitoring times (including 0 and T);
+                   overrides T and n_steps. Enables non-uniform grids for Bermudan/swing.
                            
         Returns:
             time_grid: 1-d array of shape (n_steps + 1,)
@@ -57,31 +61,47 @@ class GeometricBrownianMotion:
             rng = np.random.default_rng()
         
         if use_antithetic:
+            if n_paths % 2 != 0:
+                warnings.warn(f"n_paths={n_paths} is odd; the last path is dropped for antithetic pairing.")
             n_base_paths = n_paths // 2
         else:
             n_base_paths = n_paths
-        
-        n_steps = int(n_steps)
-        dt = T / n_steps
-        time_grid = np.linspace(0, T, n_steps + 1)
-        paths_base = np.zeros((n_base_paths, n_steps + 1, self.n_assets))
+
+        if times is not None:
+            time_grid = np.asarray(times, dtype=np.float64)
+            if len(time_grid) < 2:
+                raise ValueError("times must have at least 2 elements.")
+            if time_grid[0] != 0.0:
+                raise ValueError(f"times must start at 0, got {time_grid[0]}.")
+            if np.any(np.diff(time_grid) <= 0):
+                raise ValueError("times must be strictly increasing.")
+            n_steps = len(time_grid) - 1
+        else:
+            n_steps = int(n_steps)
+            time_grid = np.linspace(0, T, n_steps + 1)
+
+        # Per-step dt: shape (n_steps,) — handles uniform and non-uniform grids uniformly
+        dt = np.diff(time_grid)                                            # (n_steps,)
+        drift     = (self.r - self.q - 0.5 * self.sigma**2) * dt[:, None] # (n_steps, n_assets)
+        diffusion = self.sigma * np.sqrt(dt[:, None])                      # (n_steps, n_assets)
+
+        paths_base = np.empty((n_base_paths, n_steps + 1, self.n_assets))
         paths_base[:, 0, :] = self.S0
 
         # Generate correlated normals
         Z_uncorr = rng.normal(size=(n_base_paths, n_steps, self.n_assets))
         Z = Z_uncorr @ self.L.T  # Corr(Z) = Cov(Z) = E(Z.T @ Z) = L @ L.T
-        drift = (self.r - self.q - 0.5 * (self.sigma**2)) * dt
-        diffusion = self.sigma * np.sqrt(dt)
 
-        for t in range(1, n_steps + 1):
-            paths_base[:, t, :] = paths_base[:, t-1, :] * np.exp(drift[None, :] + diffusion[None, :] * Z[:, t-1, :])
-        
+        log_return = drift[None, :, :] + diffusion[None, :, :] * Z  # (n_base_paths, n_steps, n_assets)
+        paths_base[:, 1:, :] = self.S0 * np.exp(np.cumsum(log_return, axis=1))
+
         # If using antithetic variables, create antithetic paths and combine
         if use_antithetic:
-            paths_anti = np.zeros((n_base_paths, n_steps + 1, self.n_assets))
+            paths_anti = np.empty((n_base_paths, n_steps + 1, self.n_assets))
             paths_anti[:, 0, :] = self.S0
-            for t in range(1, n_steps + 1):
-                paths_anti[:, t, :] = paths_anti[:, t-1, :] * np.exp(drift[None, :] - diffusion[None, :] * Z[:, t-1, :])
+            paths_anti[:, 1:, :] = self.S0 * np.exp(
+                np.cumsum(drift[None, :, :] - diffusion[None, :, :] * Z, axis=1)
+            )
             paths = np.vstack([paths_base, paths_anti])
         else:
             paths = paths_base
@@ -91,15 +111,3 @@ class GeometricBrownianMotion:
             paths = paths.squeeze(axis=2)
         
         return time_grid, paths
-
-class AmericanMaxCall:
-    """
-    Example:
-        payoff = AmericanMaxCall(strike=100)
-        intrinsic = payoff(asset_prices)  # shape (n_paths,)
-    """
-    def __init__(self, strike: float):
-        self.strike = strike
-    
-    def __call__(self, asset_prices: np.ndarray) -> np.ndarray:
-        return np.maximum(asset_prices - self.strike, 0)
