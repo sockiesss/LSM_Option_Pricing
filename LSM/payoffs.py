@@ -1,7 +1,7 @@
 import numpy as np
 from numpy.polynomial import hermite
 
-class AmericanOption:
+class VanillaPayoff:
     def __init__(self, strike: float, option_type: str = "put"):
         """
         Initializes the American option's payoff parameters
