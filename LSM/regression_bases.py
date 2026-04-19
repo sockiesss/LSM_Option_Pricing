@@ -7,11 +7,6 @@ class LaguerrePolynomials:
     Input X can be (n_samples, n_features).
     """
     def __init__(self, degree: int = 3):
-        """
-        Initializes the degree parameter of the Laguerre Polynomial
-        degree: max order, 3 by default
-        beta: fitted beta 1-d np.array, None by default, only valid after fitting
-        """
         self.degree = degree
         self.beta = None
 
@@ -42,3 +37,13 @@ class LaguerrePolynomials:
         """
         A = self.design_matrix(X)
         return A @ self.beta
+
+    def fit_predict(self, X: np.ndarray, Y: np.ndarray) -> np.ndarray:
+        """
+        Fit regression and return in-sample fitted values.
+        Used for plain LSM (without LOO) so that design_matrix is built only once.
+        """
+        A = self.design_matrix(X)
+        beta, *_ = np.linalg.lstsq(A, Y, rcond=None)
+        self.beta = beta
+        return A @ beta

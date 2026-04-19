@@ -39,13 +39,14 @@ class LeastSquaresMonteCarlo:
         return loo_pred
 
     def pricer(self, T: float, n_steps: int, n_paths: int, 
-               rng: np.random.Generator = None,
-               use_antithetic: bool = False,
-               control_variate: str = None,
-               create_features=None,
-               cache: bool = False,
-               exercise_times=None,
-               times=None) -> tuple:
+            rng: np.random.Generator = None,
+            use_antithetic: bool = False,
+            control_variate: str = None,
+            create_features=None,
+            cache: bool = False,
+            exercise_times=None,
+            times=None,
+            use_loo: bool = False) -> tuple:
         """
         Monte Carlo simulation with regressions; uses backward induction 
         and compares continuation value and intrinsic value to decide whether
@@ -127,26 +128,32 @@ class LeastSquaresMonteCarlo:
                 X_itm = paths[itm_mask, t] / strike
                 y_itm = dsc_cashflow[itm_mask]
 
-                A = self.basis_function.design_matrix(X_itm)
-                #continuation[itm_mask] = self._loo_predict(A, y_itm) #LOOLSM
-                beta, *_ = np.linalg.lstsq(A, y_itm, rcond=None) #plain LSM
-                continuation[itm_mask] = A @ beta #plain LSM
+                if use_loo:
+                    A = self.basis_function.design_matrix(X_itm)
+                    continuation[itm_mask] = self._loo_predict(A, y_itm)
+                else:
+                    continuation[itm_mask] = self.basis_function.fit_predict(X_itm, y_itm)
 
             elif create_features is None:
                 # Single asset without strike
                 X_itm = paths[itm_mask, t]
                 y_itm = dsc_cashflow[itm_mask]
 
-                A = self.basis_function.design_matrix(X_itm)
-                #continuation[itm_mask] = self._loo_predict(A, y_itm) #LOOLSM
-                beta, *_ = np.linalg.lstsq(A, y_itm, rcond=None) #plain LSM
-                continuation[itm_mask] = A @ beta #plain LSM
+                if use_loo:
+                    A = self.basis_function.design_matrix(X_itm)
+                    continuation[itm_mask] = self._loo_predict(A, y_itm)
+                else:
+                    continuation[itm_mask] = self.basis_function.fit_predict(X_itm, y_itm)
 
             else:
-                # Multi-asset: keep plain LSM for now
+                # Multi-asset
                 features = create_features(paths[itm_mask, t, :])
-                self.basis_function.fit(features, dsc_cashflow[itm_mask])
-                continuation[itm_mask] = self.basis_function.predict(features)
+
+                if use_loo:
+                    A = self.basis_function.design_matrix(features)
+                    continuation[itm_mask] = self._loo_predict(A, dsc_cashflow[itm_mask])
+                else:
+                    continuation[itm_mask] = self.basis_function.fit_predict(features, dsc_cashflow[itm_mask])
             
             # Exercise if immediate payoff is greater than continuation value
             exercise_mask = immediate_payoff > continuation
