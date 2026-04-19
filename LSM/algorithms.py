@@ -10,14 +10,43 @@ class LeastSquaresMonteCarlo:
         self.payoff_function = payoff_function
         self.basis_function = basis_function
 
+    def _loo_predict(self, A: np.ndarray, y: np.ndarray) -> np.ndarray:
+        """
+        Return leave-one-out fitted values for OLS regression y ~ A.
+
+        Args:
+            A: design matrix, shape (n_samples, n_features)
+            y: regression target, shape (n_samples,)
+
+        Returns:
+            loo_pred: leave-one-out fitted values, shape (n_samples,)
+        """
+        beta, *_ = np.linalg.lstsq(A, y, rcond=None)
+        y_hat = A @ beta
+        resid = y - y_hat
+
+        # Hat matrix diagonal: h_i = a_i' (A'A)^(-1) a_i
+        XtX_inv = np.linalg.pinv(A.T @ A)
+        h = np.sum((A @ XtX_inv) * A, axis=1)
+
+        # Numerical safeguard
+        eps = 1e-12
+        denom = np.maximum(1.0 - h, eps)
+
+        # Leave-one-out fitted value:
+        # y_hat^{(-i)} = y_i - e_i / (1 - h_i)
+        loo_pred = y - resid / denom
+        return loo_pred
+
     def pricer(self, T: float, n_steps: int, n_paths: int, 
-               rng: np.random.Generator = None,
-               use_antithetic: bool = False,
-               control_variate: str = None,
-               create_features=None,
-               cache: bool = False,
-               exercise_times=None,
-               times=None) -> tuple:
+            rng: np.random.Generator = None,
+            use_antithetic: bool = False,
+            control_variate: str = None,
+            create_features=None,
+            cache: bool = False,
+            exercise_times=None,
+            times=None,
+            use_loo: bool = False) -> tuple:
         """
         Monte Carlo simulation with regressions; uses backward induction 
         and compares continuation value and intrinsic value to decide whether
@@ -45,9 +74,14 @@ class LeastSquaresMonteCarlo:
             
         Call get_cashflow() to retrieve cached cashflow matrix (only if cache=True).
         """
-        time_grid, paths = self.process.simulate(T, n_steps, n_paths, rng, use_antithetic=use_antithetic, times=times)
+        time_grid, paths = self.process.simulate(
+            T, n_steps, n_paths, rng,
+            use_antithetic=use_antithetic,
+            times=times
+        )
         n_steps = len(time_grid) - 1  # Recompute; may differ if times was provided
         T = float(time_grid[-1])
+
         # Convert actual time values to nearest time-grid indices
         if exercise_times is not None:
             out_of_range = [t for t in exercise_times if t < 0 or t > T]
@@ -57,7 +91,6 @@ class LeastSquaresMonteCarlo:
         else:
             exercise_set = None
         
-        # Initializations: See Longstaff-Schwartz paper pp. 115-120, p. 122
         # 1. Array of discounted ex-post realized cash flow (for one-step regression)
         dsc_cashflow = self.payoff_function(paths[:, -1])
         
@@ -87,28 +120,44 @@ class LeastSquaresMonteCarlo:
             if not np.any(itm_mask):
                 continue
             
-            # Normalize state by strike for numerical stability. See Longstaff-Schwartz paper p. 143.
-            # For multi-asset, create features first and don't normalize.
             continuation = np.zeros_like(immediate_payoff, dtype=np.float64)
+
             if create_features is None and hasattr(self.payoff_function, 'strike'):
-                # Single asset with strike: normalize by strike
+                # Single asset with strike normalization
                 strike = self.payoff_function.strike
-                self.basis_function.fit(paths[itm_mask, t] / strike, dsc_cashflow[itm_mask])
-                continuation[itm_mask] = self.basis_function.predict(paths[itm_mask, t] / strike)
+                X_itm = paths[itm_mask, t] / strike
+                y_itm = dsc_cashflow[itm_mask]
+
+                if use_loo:
+                    A = self.basis_function.design_matrix(X_itm)
+                    continuation[itm_mask] = self._loo_predict(A, y_itm)
+                else:
+                    continuation[itm_mask] = self.basis_function.fit_predict(X_itm, y_itm)
+
             elif create_features is None:
                 # Single asset without strike
-                self.basis_function.fit(paths[itm_mask, t], dsc_cashflow[itm_mask])
-                continuation[itm_mask] = self.basis_function.predict(paths[itm_mask, t])
+                X_itm = paths[itm_mask, t]
+                y_itm = dsc_cashflow[itm_mask]
+
+                if use_loo:
+                    A = self.basis_function.design_matrix(X_itm)
+                    continuation[itm_mask] = self._loo_predict(A, y_itm)
+                else:
+                    continuation[itm_mask] = self.basis_function.fit_predict(X_itm, y_itm)
+
             else:
                 # Multi-asset
                 features = create_features(paths[itm_mask, t, :])
-                self.basis_function.fit(features, dsc_cashflow[itm_mask])
-                continuation[itm_mask] = self.basis_function.predict(features) 
+
+                if use_loo:
+                    A = self.basis_function.design_matrix(features)
+                    continuation[itm_mask] = self._loo_predict(A, dsc_cashflow[itm_mask])
+                else:
+                    continuation[itm_mask] = self.basis_function.fit_predict(features, dsc_cashflow[itm_mask])
             
-            # Update cashflow table
-            # Note: For non-exercised paths, the cashflow is not updated.
             # Exercise if immediate payoff is greater than continuation value
             exercise_mask = immediate_payoff > continuation
+
             # Update discounted cashflow for the next iteration
             dsc_cashflow = np.where(exercise_mask, immediate_payoff, dsc_cashflow)
             
@@ -121,7 +170,6 @@ class LeastSquaresMonteCarlo:
             if control_variate == 'european_at_exercise':
                 exercise_time[exercise_mask] = time_grid[t]
                 exercise_spot[exercise_mask] = paths[exercise_mask, t]
-           
 
         price = np.mean(dsc_cashflow)
         if n_paths > 1:
@@ -133,7 +181,6 @@ class LeastSquaresMonteCarlo:
         if control_variate is not None:
             if create_features is not None or paths.ndim != 2:
                 print("Warning: Control variate is currently only implemented for single-asset options without custom features. Skipping control variate.")
-                # Skip CV silently for multi-asset options
                 if cache:
                     self._cached_cashflow = cashflow_matrix
                 return price, stderr
@@ -153,22 +200,16 @@ class LeastSquaresMonteCarlo:
             x_samples = dsc_cashflow
             
             if control_variate == "european_at_maturity":
-                # Broadie-Glasserman (1997) / Rasmussen (2005) eq. (8):
-                #   Y_i = e^{-rT} * Phi(S_T^i)   (discounted payoff at maturity)
-                #   E[Y] = C^BS(S_0, T)           (closed-form European price)
+                # Broadie-Glasserman (1997) / Rasmussen (2005) eq. (8)
                 y_samples = european_discounted_payoff(paths[:, -1], K, r, T, option_type)
                 y_expectation = bs_european_price(S0, K, r, q, sigma, T, option_type)
-            elif control_variate == "european_at_exercise":
-                # Rasmussen (2005) eq. (10) — higher variance reduction than european_at_maturity:
-                #   Y_i = e^{-r*tau_i} * C^BS(S_{tau_i}, T - tau_i)
-                #       = Black-Scholes PRICE of a European still expiring at T,
-                #         evaluated at the stopping time tau_i with remaining life T - tau_i
-                #   E[Y] = C^BS(S_0, T)   (optional stopping theorem; E[Y] does not depend on tau)
-                # NOTE: Y_i is NOT the payoff of a European expiring at tau_i.
-                remaining_T = np.maximum(T - exercise_time, 0.0)
 
-                euro_value_at_tau = bs_european_price(exercise_spot, K, r, q, sigma, remaining_T, option_type)
-                
+            elif control_variate == "european_at_exercise":
+                # Rasmussen (2005) eq. (10)
+                remaining_T = np.maximum(T - exercise_time, 0.0)
+                euro_value_at_tau = bs_european_price(
+                    exercise_spot, K, r, q, sigma, remaining_T, option_type
+                )
                 y_samples = np.exp(-r * exercise_time) * euro_value_at_tau
                 y_expectation = bs_european_price(S0, K, r, q, sigma, T, option_type)
             
