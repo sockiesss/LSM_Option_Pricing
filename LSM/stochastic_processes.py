@@ -39,7 +39,7 @@ class GeometricBrownianMotion:
     def simulate(self, T: float, n_steps: int, n_paths: int, 
                  rng: np.random.Generator = None,
                  use_antithetic: bool = False,
-                 times=None) -> tuple:
+                 simulation_times=None) -> tuple:
         """
         Simulate GBM paths.
         
@@ -49,7 +49,7 @@ class GeometricBrownianMotion:
             n_paths: number of paths (if use_antithetic=True, generates n_paths/2 pairs)
             rng: random number generator
             use_antithetic: if True, generate antithetic pairs for variance reduction
-            times: optional 1-d array of monitoring times (including 0 and T);
+            simulation_times: optional 1-d array of monitoring times (including 0 and T);
                    overrides T and n_steps. Enables non-uniform grids for Bermudan/swing.
                            
         Returns:
@@ -67,14 +67,14 @@ class GeometricBrownianMotion:
         else:
             n_base_paths = n_paths
 
-        if times is not None:
-            time_grid = np.asarray(times, dtype=np.float64)
+        if simulation_times is not None:
+            time_grid = np.asarray(simulation_times, dtype=np.float64)
             if len(time_grid) < 2:
-                raise ValueError("times must have at least 2 elements.")
+                raise ValueError("simulation_times must have at least 2 elements.")
             if time_grid[0] != 0.0:
-                raise ValueError(f"times must start at 0, got {time_grid[0]}.")
+                raise ValueError(f"simulation_times must start at 0, got {time_grid[0]}.")
             if np.any(np.diff(time_grid) <= 0):
-                raise ValueError("times must be strictly increasing.")
+                raise ValueError("simulation_times must be strictly increasing.")
             n_steps = len(time_grid) - 1
         else:
             n_steps = int(n_steps)

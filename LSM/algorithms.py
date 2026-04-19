@@ -17,7 +17,7 @@ class LeastSquaresMonteCarlo:
                create_features=None,
                cache: bool = False,
                exercise_times=None,
-               times=None) -> tuple:
+               simulation_times=None) -> tuple:
         """
         Monte Carlo simulation with regressions; uses backward induction 
         and compares continuation value and intrinsic value to decide whether
@@ -33,19 +33,17 @@ class LeastSquaresMonteCarlo:
                 Options: None, 'european_at_maturity', 'european_at_exercise'
             create_features: function to create additional features for regression
             cache: if True, cache the cash flow matrix with exercise cash flows
-            exercise_times: array-like of actual time values where exercise is allowed, e.g.
-                            [0.25, 0.5, 0.75, 1.0] for quarterly Bermudan. None = every step (American).
-                            Independent of simulation resolution: use a fine n_steps for path
-                            accuracy and a sparse exercise_times for the exercise schedule.
-            times: optional custom simulation time grid passed to process.simulate() as-is;
-                   overrides T and n_steps. Use for non-uniform grids (e.g. swing options).
+            exercise_times: array-like exercise times, e.g. [0.25, 0.5, 0.75, 1.0] for quarterly Bermudan. 
+                None = every step (American).
+            simulation_times: optional custom simulation time grid passed to process.simulate() as-is;
+                   overrides T and n_steps. Use for non-uniform grids.
             
         Returns:
             (price, stderr): option price estimate and standard error
             
         Call get_cashflow() to retrieve cached cashflow matrix (only if cache=True).
         """
-        time_grid, paths = self.process.simulate(T, n_steps, n_paths, rng, use_antithetic=use_antithetic, times=times)
+        time_grid, paths = self.process.simulate(T, n_steps, n_paths, rng, use_antithetic, simulation_times)
         n_steps = len(time_grid) - 1  # Recompute; may differ if times was provided
         T = float(time_grid[-1])
         # Convert actual time values to nearest time-grid indices
@@ -205,3 +203,120 @@ class LeastSquaresMonteCarlo:
         if not hasattr(self, '_cached_cashflow'):
             raise RuntimeError("Call pricer(cache=True) first before retrieving exercise decisions.")
         return self._cached_cashflow
+    
+    
+
+    def swing_pricer(self, T: float, n_steps: int, n_paths: int, rng=None, use_antithetic: bool = False,
+                     contract_prices: np.ndarray = None, simulation_times: np.ndarray = None, 
+                     DCQ: float = 1.0, Ed: int = 1, ToP_rights: int = 0) -> tuple:
+        """
+        Prices a natural gas swing option with volume constraints using Least Squares Monte Carlo.
+        Assumes every step in the simulation grid is a valid daily exercise opportunity.
+        
+        Args:
+            T: float, total time to maturity (in years).
+            n_steps: int, number of discrete time steps.
+            n_paths: int, number of Monte Carlo paths to simulate.
+            rng: np.random.Generator, random number generator instance.
+            use_antithetic: bool, if True, uses antithetic variates for variance reduction.
+            
+            contract_prices: 1D np.ndarray of shape (n_steps + 1,). The fixed strike price 
+                or forward curve value at each time step.
+            simulation_times: 1D np.ndarray, optional. A custom time grid passed directly to 
+                the simulator. If provided, overrides T and n_steps. Must match the length 
+                of contract_prices.
+                
+            DCQ: float, Daily Contract Quantity (maximum volume allowed per exercise).
+            Ed: int, total number of exercise rights available (Annual Contract Quantity / DCQ).
+            ToP_rights: int, minimum number of times the option MUST be exercised to avoid 
+                penalties (Take-or-Pay Volume / DCQ).
+                
+        Returns:
+            price: float, estimated option value at t=0.
+            stderr: float, standard error of the Monte Carlo estimate.
+        """
+        # Setup: time grid, simulated paths, spreads (S_t = CP_t - P_t), discount factors
+        time_grid, paths = self.process.simulate(T, n_steps, n_paths, rng, use_antithetic, simulation_times)
+        n_steps = len(time_grid) - 1
+        T = float(time_grid[-1])
+        
+        if len(contract_prices) != n_steps + 1:
+            raise ValueError("contract_prices must have a length of n_steps + 1!!!")
+        
+        dfs = np.exp(-self.process.r * np.diff(time_grid))
+        
+        # LSM algorithm for swing options: pp. 5-10, Hanfeld & Schlüter (2016)
+        # Set up a 2d backward for loop for the deterministic state variable: q_{n,t} (cumulative offtake, n=offtake level, i.e., amount of gas purchased).
+        # Run LSM for each q_{n,t} node. X is the bases with S_t, Y is ACCF_t+1 (all discounted realized future cash flows from t+1 to T)
+        # Note: the second state variable is S_t (spread), random.
+        # Optimal decision rule: argmax_{a_t∈{0, DCQ_t}} {a_t*(CP_t - P_t) +  E hat_t+1[S_t, q_{n,t} + a_t]}, where
+        # a_t*(CP_t - P_t) is the running reward from the action a_t, and E hat_t+1 is the continuation value, or the estimated value function
+        
+        # Step 1: Initialize 2d discounted cash flow matrix: (Ed + 1, n_paths)
+        dsc_cashflow = np.zeros((Ed + 1, n_paths))
+        # Hard rule: any offtake level n at maturity strictly below ToP_rights is invalid
+        for n in range(ToP_rights):
+            dsc_cashflow[n, :] = -np.inf
+
+        # Backward Induction
+        for t in range(n_steps - 1, -1, -1):
+            # Discount dsc_cashflow matrix from t+1
+            dsc_cashflow *= dfs[t]
+            new_dsc_cashflow = np.copy(dsc_cashflow)
+            
+            # Calculate spread for the CURRENT time step across all paths using the payoff class
+            current_spread = self.payoff_function(paths[:, t], contract_prices[t])
+
+            # Initiate 2d continuation_matrix for the NEXT time step. dim 0: offtake levels; dim 1: paths.
+            # Note: We initialize a new continuation_matrix for each new time step (no time dimension).
+            continuation_matrix = np.zeros((Ed + 1, n_paths))
+            
+            # Calculate REACHABLE boundaries for CURRENT node q_{n,t}, n = cumulative offtake level
+            remaining_steps = n_steps - t 
+            min_n = max(0, ToP_rights - remaining_steps) # e.g. if only have 2 remaining days while ToP=3, will be penalized (unreachable state)
+            max_n = min(t, Ed) # e.g. can't reach offtake level n=5 at t=2 or if Ed=2
+            
+            # Pick all REACHABLE NEXT nodes and run LSM for each of them
+            max_next_n = min(t + 1, Ed)
+            for m in range(min_n, max_next_n + 1):
+                y_all = dsc_cashflow[m, :]
+                valid_mask = np.isfinite(y_all) # Filter out invalid (-inf) paths
+                # Update continuation value at NEXT time step t+1 for offtake level m
+                if np.any(valid_mask):
+                    self.basis_function.fit(current_spread[valid_mask], y_all[valid_mask])
+                    continuation_matrix[m, :] = self.basis_function.predict(current_spread)
+                else:
+                    continuation_matrix[m, :] = -np.inf
+            
+
+            # For all valid CURRENT cumulative offtake levels q_{n,t}, decide whether to exercise or wait.
+            # Plug a_t∈{0, DCQ_t} into a_t * S_t +  E hat_t+1[S_t, q_{n,t} + a_t] and find the better a_t
+            for n in range(min_n, max_n + 1):
+                # Hard rule enforcement: If waiting leads to an invalid state next step, wait value is -inf
+                if n < ToP_rights - (remaining_steps - 1):
+                    value_wait = np.full(n_paths, -np.inf)
+                else:
+                    value_wait = continuation_matrix[n, :]
+                
+                # If Ed rights are not used up, calculate exercise value
+                if n < Ed:
+                    continuation = continuation_matrix[n + 1, :]
+                    value_exercise = (current_spread * DCQ) + continuation
+                else:
+                    value_exercise = np.full(n_paths, -np.inf)
+
+                # Evaluate exercise decision across all paths
+                exercise_mask = value_exercise > value_wait
+                
+                # Matrix update using REALIZED cash flows
+                if n < Ed:
+                    new_dsc_cashflow[n, exercise_mask] = (current_spread[exercise_mask] * DCQ) + dsc_cashflow[n + 1, exercise_mask]
+                new_dsc_cashflow[n, ~exercise_mask] = dsc_cashflow[n, ~exercise_mask]
+                
+            dsc_cashflow = new_dsc_cashflow   
+              
+        # Final Option Value
+        price = np.mean(dsc_cashflow[0, :])
+        stderr = np.std(dsc_cashflow[0, :], ddof=1) / np.sqrt(n_paths) if n_paths > 1 else 0.0
+        
+        return price, stderr
