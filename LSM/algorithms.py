@@ -226,6 +226,98 @@ class LeastSquaresMonteCarlo:
             self._cached_cashflow = cashflow_matrix
 
         return price, stderr
+
+    def quanto_pricer(
+            self,
+            T,
+            n_steps,
+            n_paths,
+            rng=None,
+            use_antithetic=False,
+            create_features=None,
+            cache=False
+    ):
+        """
+        Quanto-compatible pricer.
+
+        Works for:
+        1. fixed-rate quanto with QuantoGBM + ScaledPayoff(...)
+        2. stochastic-rate quanto with QuantoStochasticRatesProcess + pathwise discounting
+
+        Keeps the original pricer untouched.
+        """
+        time_grid, paths = self.process.simulate(
+            T=T,
+            n_steps=n_steps,
+            n_paths=n_paths,
+            rng=rng,
+            use_antithetic=use_antithetic
+        )
+
+        dt = T / n_steps
+
+        def state_at(t_idx):
+            if paths.ndim == 2:
+                return paths[:, t_idx]
+            return paths[:, t_idx, :]
+
+        terminal_state = state_at(-1)
+        dsc_cashflow = self.payoff_function(terminal_state)
+
+        if cache:
+            self.cashflow = np.zeros((n_paths, n_steps + 1), dtype=np.float64)
+            self.cashflow[:, -1] = dsc_cashflow
+
+        for t in range(n_steps - 1, 0, -1):
+            if hasattr(self.process, "discount_step"):
+                df = self.process.discount_step(paths, t, dt)
+                dsc_cashflow = dsc_cashflow * df
+            else:
+                # deterministic domestic discounting fallback
+                r_disc = getattr(self.process, "r_dom", getattr(self.process, "r", 0.0))
+                dsc_cashflow = dsc_cashflow * np.exp(-r_disc * dt)
+
+            current_state = state_at(t)
+            immediate_payoff = self.payoff_function(current_state)
+            itm_mask = immediate_payoff > 0
+
+            continuation = np.zeros_like(immediate_payoff, dtype=np.float64)
+
+            if np.any(itm_mask):
+                if create_features is not None:
+                    X_fit = create_features(current_state[itm_mask])
+                    X_all = create_features(current_state)
+                else:
+                    if current_state.ndim == 1 and hasattr(self.payoff_function, "strike"):
+                        strike = float(self.payoff_function.strike)
+                        X_fit = current_state[itm_mask] / strike
+                        X_all = current_state / strike
+                    else:
+                        X_fit = current_state[itm_mask]
+                        X_all = current_state
+
+                Y_fit = dsc_cashflow[itm_mask]
+                beta = self.basis_function.fit(X_fit, Y_fit)
+                continuation = self.basis_function.predict(X_all)
+
+            exercise_mask = itm_mask & (immediate_payoff > continuation)
+            dsc_cashflow = np.where(exercise_mask, immediate_payoff, dsc_cashflow)
+
+            if cache:
+                self.cashflow[exercise_mask, t] = immediate_payoff[exercise_mask]
+                self.cashflow[exercise_mask, t + 1:] = 0.0
+
+        if hasattr(self.process, "discount_step"):
+            df0 = self.process.discount_step(paths, 0, dt)
+            dsc_cashflow = dsc_cashflow * df0
+        else:
+            r_disc = getattr(self.process, "r_dom", getattr(self.process, "r", 0.0))
+            dsc_cashflow = dsc_cashflow * np.exp(-r_disc * dt)
+
+        price = np.mean(dsc_cashflow)
+        stderr = np.std(dsc_cashflow, ddof=1) / np.sqrt(n_paths)
+
+        return price, stderr
     
     def get_cashflow(self) -> np.ndarray:
         """

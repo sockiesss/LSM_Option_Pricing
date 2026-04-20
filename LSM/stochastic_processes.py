@@ -111,3 +111,209 @@ class GeometricBrownianMotion:
             paths = paths.squeeze(axis=2)
         
         return time_grid, paths
+
+class AmericanMaxCall:
+    """
+    Example:
+        payoff = AmericanMaxCall(strike=100)
+        intrinsic = payoff(asset_prices)  # shape (n_paths,)
+    """
+    def __init__(self, strike: float):
+        self.strike = strike
+    
+    def __call__(self, asset_prices: np.ndarray) -> np.ndarray:
+        return np.maximum(asset_prices - self.strike, 0)
+
+class QuantoGBM:
+    """
+    Fixed-rate quanto stock process under the domestic pricing measure.
+
+    Stock dynamics:
+        dS_t = (r_for - q - rho_sfx * sigma_s * sigma_fx) S_t dt + sigma_s S_t dW_t
+
+    Use with:
+        vanilla payoff -> AmericanOption(...)
+        quanto payoff  -> ScaledPayoff(AmericanOption(...), fx_fix)
+    """
+    def __init__(self, S0, r_dom, r_for, q, sigma_s, sigma_fx, rho_sfx):
+        self.S0 = float(S0)
+        self.r = float(r_dom)          # kept for compatibility / fallback
+        self.r_dom = float(r_dom)
+        self.r_for = float(r_for)
+        self.q = float(q)
+        self.sigma_s = float(sigma_s)
+        self.sigma_fx = float(sigma_fx)
+        self.rho_sfx = float(rho_sfx)
+
+    def simulate(self, T, n_steps, n_paths, rng=None, use_antithetic=False):
+        if rng is None:
+            rng = np.random.default_rng()
+
+        dt = T / n_steps
+        time_grid = np.linspace(0.0, T, n_steps + 1)
+
+        if use_antithetic:
+            n_base = n_paths // 2
+        else:
+            n_base = n_paths
+
+        Z = rng.normal(size=(n_base, n_steps))
+        mu_q = self.r_for - self.q - self.rho_sfx * self.sigma_s * self.sigma_fx
+        drift = (mu_q - 0.5 * self.sigma_s**2) * dt
+        diff  = self.sigma_s * np.sqrt(dt)
+
+        paths_base = np.zeros((n_base, n_steps + 1), dtype=np.float64)
+        paths_base[:, 0] = self.S0
+
+        for t in range(1, n_steps + 1):
+            paths_base[:, t] = paths_base[:, t - 1] * np.exp(drift + diff * Z[:, t - 1])
+
+        if use_antithetic:
+            paths_anti = np.zeros((n_base, n_steps + 1), dtype=np.float64)
+            paths_anti[:, 0] = self.S0
+            for t in range(1, n_steps + 1):
+                paths_anti[:, t] = paths_anti[:, t - 1] * np.exp(drift - diff * Z[:, t - 1])
+            paths = np.vstack([paths_base, paths_anti])
+        else:
+            paths = paths_base
+
+        return time_grid, paths
+
+
+class QuantoStochasticRatesProcess:
+    """
+    Fixed-rate quanto with stochastic domestic / foreign short rates.
+
+    State per path and time:
+        state[..., 0] = stock S_t
+        state[..., 1] = domestic short rate r_d(t)
+        state[..., 2] = foreign short rate r_f(t)
+
+    Dynamics:
+        dS_t  = (r_f(t) - q - rho_sfx * sigma_s * sigma_fx) S_t dt + sigma_s S_t dW_s
+        dr_d  = a_d (b_d - r_d) dt + sigma_d dW_d
+        dr_f  = a_f (b_f - r_f) dt + sigma_f dW_f
+
+    correlation_matrix is 3x3 for [W_s, W_d, W_f].
+    """
+    def __init__(
+        self,
+        S0,
+        rd0,
+        rf0,
+        q,
+        sigma_s,
+        sigma_fx,
+        rho_sfx,
+        a_d,
+        b_d,
+        sigma_d,
+        a_f,
+        b_f,
+        sigma_f,
+        correlation_matrix=None
+    ):
+        self.S0 = float(S0)
+        self.rd0 = float(rd0)
+        self.rf0 = float(rf0)
+        self.q = float(q)
+
+        self.sigma_s = float(sigma_s)
+        self.sigma_fx = float(sigma_fx)
+        self.rho_sfx = float(rho_sfx)
+
+        self.a_d = float(a_d)
+        self.b_d = float(b_d)
+        self.sigma_d = float(sigma_d)
+
+        self.a_f = float(a_f)
+        self.b_f = float(b_f)
+        self.sigma_f = float(sigma_f)
+
+        # kept for compatibility / fallback
+        self.r = self.rd0
+
+        if correlation_matrix is None:
+            correlation_matrix = np.eye(3)
+
+        self.correlation_matrix = np.asarray(correlation_matrix, dtype=np.float64)
+        self.cholesky_factor = np.linalg.cholesky(self.correlation_matrix)
+
+    def simulate(self, T, n_steps, n_paths, rng=None, use_antithetic=False):
+        if rng is None:
+            rng = np.random.default_rng()
+
+        dt = T / n_steps
+        sqdt = np.sqrt(dt)
+        time_grid = np.linspace(0.0, T, n_steps + 1)
+
+        if use_antithetic:
+            n_base = n_paths // 2
+        else:
+            n_base = n_paths
+
+        Z_uncorr = rng.normal(size=(n_base, n_steps, 3))
+        Z = np.einsum("...j,ij->...i", Z_uncorr, self.cholesky_factor.T)
+
+        states_base = np.zeros((n_base, n_steps + 1, 3), dtype=np.float64)
+        states_base[:, 0, 0] = self.S0
+        states_base[:, 0, 1] = self.rd0
+        states_base[:, 0, 2] = self.rf0
+
+        for t in range(1, n_steps + 1):
+            s_prev  = states_base[:, t - 1, 0]
+            rd_prev = states_base[:, t - 1, 1]
+            rf_prev = states_base[:, t - 1, 2]
+
+            z_s = Z[:, t - 1, 0]
+            z_d = Z[:, t - 1, 1]
+            z_f = Z[:, t - 1, 2]
+
+            rd_new = rd_prev + self.a_d * (self.b_d - rd_prev) * dt + self.sigma_d * sqdt * z_d
+            rf_new = rf_prev + self.a_f * (self.b_f - rf_prev) * dt + self.sigma_f * sqdt * z_f
+
+            mu_q = rf_prev - self.q - self.rho_sfx * self.sigma_s * self.sigma_fx
+            s_new = s_prev * np.exp((mu_q - 0.5 * self.sigma_s**2) * dt + self.sigma_s * sqdt * z_s)
+
+            states_base[:, t, 0] = s_new
+            states_base[:, t, 1] = rd_new
+            states_base[:, t, 2] = rf_new
+
+        if use_antithetic:
+            states_anti = np.zeros((n_base, n_steps + 1, 3), dtype=np.float64)
+            states_anti[:, 0, 0] = self.S0
+            states_anti[:, 0, 1] = self.rd0
+            states_anti[:, 0, 2] = self.rf0
+
+            for t in range(1, n_steps + 1):
+                s_prev  = states_anti[:, t - 1, 0]
+                rd_prev = states_anti[:, t - 1, 1]
+                rf_prev = states_anti[:, t - 1, 2]
+
+                z_s = -Z[:, t - 1, 0]
+                z_d = -Z[:, t - 1, 1]
+                z_f = -Z[:, t - 1, 2]
+
+                rd_new = rd_prev + self.a_d * (self.b_d - rd_prev) * dt + self.sigma_d * sqdt * z_d
+                rf_new = rf_prev + self.a_f * (self.b_f - rf_prev) * dt + self.sigma_f * sqdt * z_f
+
+                mu_q = rf_prev - self.q - self.rho_sfx * self.sigma_s * self.sigma_fx
+                s_new = s_prev * np.exp((mu_q - 0.5 * self.sigma_s**2) * dt + self.sigma_s * sqdt * z_s)
+
+                states_anti[:, t, 0] = s_new
+                states_anti[:, t, 1] = rd_new
+                states_anti[:, t, 2] = rf_new
+
+            states = np.vstack([states_base, states_anti])
+        else:
+            states = states_base
+
+        return time_grid, states
+
+    def discount_step(self, paths: np.ndarray, t: int, dt: float) -> np.ndarray:
+        """
+        Pathwise discount factor from t to t+1 using domestic short rate at time t.
+        """
+        rd_t = paths[:, t, 1]
+        return np.exp(-rd_t * dt)
+
