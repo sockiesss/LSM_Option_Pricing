@@ -10,6 +10,34 @@ class LeastSquaresMonteCarlo:
         self.payoff_function = payoff_function
         self.basis_function = basis_function
 
+    def _loo_predict(self, A: np.ndarray, y: np.ndarray) -> np.ndarray:
+        """
+        Return leave-one-out fitted values for OLS regression y ~ A.
+
+        Args:
+            A: design matrix, shape (n_samples, n_features)
+            y: regression target, shape (n_samples,)
+
+        Returns:
+            loo_pred: leave-one-out fitted values, shape (n_samples,)
+        """
+        beta, *_ = np.linalg.lstsq(A, y, rcond=None)
+        y_hat = A @ beta
+        resid = y - y_hat
+
+        # Hat matrix diagonal: h_i = a_i' (A'A)^(-1) a_i
+        XtX_inv = np.linalg.pinv(A.T @ A)
+        h = np.sum((A @ XtX_inv) * A, axis=1)
+
+        # Numerical safeguard
+        eps = 1e-12
+        denom = np.maximum(1.0 - h, eps)
+
+        # Leave-one-out fitted value:
+        # y_hat^{(-i)} = y_i - e_i / (1 - h_i)
+        loo_pred = y - resid / denom
+        return loo_pred
+
     def pricer(self, T: float, n_steps: int, n_paths: int, 
                rng: np.random.Generator = None,
                use_antithetic: bool = False,
@@ -17,7 +45,8 @@ class LeastSquaresMonteCarlo:
                create_features=None,
                cache: bool = False,
                exercise_times=None,
-               times=None) -> tuple:
+               simulation_times=None,
+               use_loo: bool = False) -> tuple:
         """
         Monte Carlo simulation with regressions; uses backward induction 
         and compares continuation value and intrinsic value to decide whether
@@ -33,21 +62,21 @@ class LeastSquaresMonteCarlo:
                 Options: None, 'european_at_maturity', 'european_at_exercise'
             create_features: function to create additional features for regression
             cache: if True, cache the cash flow matrix with exercise cash flows
-            exercise_times: array-like of actual time values where exercise is allowed, e.g.
-                            [0.25, 0.5, 0.75, 1.0] for quarterly Bermudan. None = every step (American).
-                            Independent of simulation resolution: use a fine n_steps for path
-                            accuracy and a sparse exercise_times for the exercise schedule.
-            times: optional custom simulation time grid passed to process.simulate() as-is;
-                   overrides T and n_steps. Use for non-uniform grids (e.g. swing options).
+            exercise_times: array-like exercise times, e.g. [0.25, 0.5, 0.75, 1.0] for quarterly Bermudan. 
+                None = every step (American).
+            simulation_times: optional custom simulation time grid passed to process.simulate() as-is;
+                   overrides T and n_steps. Use for non-uniform grids.
+            use_loo: if True, use leave-one-out predictions for in-sample regression to reduce bias.
             
         Returns:
             (price, stderr): option price estimate and standard error
             
         Call get_cashflow() to retrieve cached cashflow matrix (only if cache=True).
         """
-        time_grid, paths = self.process.simulate(T, n_steps, n_paths, rng, use_antithetic=use_antithetic, times=times)
+        time_grid, paths = self.process.simulate(T, n_steps, n_paths, rng, use_antithetic=use_antithetic, simulation_times=simulation_times)
         n_steps = len(time_grid) - 1  # Recompute; may differ if times was provided
         T = float(time_grid[-1])
+
         # Convert actual time values to nearest time-grid indices
         if exercise_times is not None:
             out_of_range = [t for t in exercise_times if t < 0 or t > T]
@@ -57,7 +86,6 @@ class LeastSquaresMonteCarlo:
         else:
             exercise_set = None
         
-        # Initializations: See Longstaff-Schwartz paper pp. 115-120, p. 122
         # 1. Array of discounted ex-post realized cash flow (for one-step regression)
         dsc_cashflow = self.payoff_function(paths[:, -1])
         
@@ -87,28 +115,44 @@ class LeastSquaresMonteCarlo:
             if not np.any(itm_mask):
                 continue
             
-            # Normalize state by strike for numerical stability. See Longstaff-Schwartz paper p. 143.
-            # For multi-asset, create features first and don't normalize.
             continuation = np.zeros_like(immediate_payoff, dtype=np.float64)
+
             if create_features is None and hasattr(self.payoff_function, 'strike'):
-                # Single asset with strike: normalize by strike
+                # Single asset with strike normalization
                 strike = self.payoff_function.strike
-                self.basis_function.fit(paths[itm_mask, t] / strike, dsc_cashflow[itm_mask])
-                continuation[itm_mask] = self.basis_function.predict(paths[itm_mask, t] / strike)
+                X_itm = paths[itm_mask, t] / strike
+                y_itm = dsc_cashflow[itm_mask]
+
+                if use_loo:
+                    A = self.basis_function.design_matrix(X_itm)
+                    continuation[itm_mask] = self._loo_predict(A, y_itm)
+                else:
+                    continuation[itm_mask] = self.basis_function.fit_predict(X_itm, y_itm)
+
             elif create_features is None:
                 # Single asset without strike
-                self.basis_function.fit(paths[itm_mask, t], dsc_cashflow[itm_mask])
-                continuation[itm_mask] = self.basis_function.predict(paths[itm_mask, t])
+                X_itm = paths[itm_mask, t]
+                y_itm = dsc_cashflow[itm_mask]
+
+                if use_loo:
+                    A = self.basis_function.design_matrix(X_itm)
+                    continuation[itm_mask] = self._loo_predict(A, y_itm)
+                else:
+                    continuation[itm_mask] = self.basis_function.fit_predict(X_itm, y_itm)
+
             else:
                 # Multi-asset
                 features = create_features(paths[itm_mask, t, :])
-                self.basis_function.fit(features, dsc_cashflow[itm_mask])
-                continuation[itm_mask] = self.basis_function.predict(features) 
+
+                if use_loo:
+                    A = self.basis_function.design_matrix(features)
+                    continuation[itm_mask] = self._loo_predict(A, dsc_cashflow[itm_mask])
+                else:
+                    continuation[itm_mask] = self.basis_function.fit_predict(features, dsc_cashflow[itm_mask])
             
-            # Update cashflow table
-            # Note: For non-exercised paths, the cashflow is not updated.
             # Exercise if immediate payoff is greater than continuation value
             exercise_mask = immediate_payoff > continuation
+
             # Update discounted cashflow for the next iteration
             dsc_cashflow = np.where(exercise_mask, immediate_payoff, dsc_cashflow)
             
@@ -121,7 +165,6 @@ class LeastSquaresMonteCarlo:
             if control_variate == 'european_at_exercise':
                 exercise_time[exercise_mask] = time_grid[t]
                 exercise_spot[exercise_mask] = paths[exercise_mask, t]
-           
 
         price = np.mean(dsc_cashflow)
         if n_paths > 1:
@@ -133,7 +176,6 @@ class LeastSquaresMonteCarlo:
         if control_variate is not None:
             if create_features is not None or paths.ndim != 2:
                 print("Warning: Control variate is currently only implemented for single-asset options without custom features. Skipping control variate.")
-                # Skip CV silently for multi-asset options
                 if cache:
                     self._cached_cashflow = cashflow_matrix
                 return price, stderr
@@ -153,22 +195,16 @@ class LeastSquaresMonteCarlo:
             x_samples = dsc_cashflow
             
             if control_variate == "european_at_maturity":
-                # Broadie-Glasserman (1997) / Rasmussen (2005) eq. (8):
-                #   Y_i = e^{-rT} * Phi(S_T^i)   (discounted payoff at maturity)
-                #   E[Y] = C^BS(S_0, T)           (closed-form European price)
+                # Broadie-Glasserman (1997) / Rasmussen (2005) eq. (8)
                 y_samples = european_discounted_payoff(paths[:, -1], K, r, T, option_type)
                 y_expectation = bs_european_price(S0, K, r, q, sigma, T, option_type)
-            elif control_variate == "european_at_exercise":
-                # Rasmussen (2005) eq. (10) — higher variance reduction than european_at_maturity:
-                #   Y_i = e^{-r*tau_i} * C^BS(S_{tau_i}, T - tau_i)
-                #       = Black-Scholes PRICE of a European still expiring at T,
-                #         evaluated at the stopping time tau_i with remaining life T - tau_i
-                #   E[Y] = C^BS(S_0, T)   (optional stopping theorem; E[Y] does not depend on tau)
-                # NOTE: Y_i is NOT the payoff of a European expiring at tau_i.
-                remaining_T = np.maximum(T - exercise_time, 0.0)
 
-                euro_value_at_tau = bs_european_price(exercise_spot, K, r, q, sigma, remaining_T, option_type)
-                
+            elif control_variate == "european_at_exercise":
+                # Rasmussen (2005) eq. (10)
+                remaining_T = np.maximum(T - exercise_time, 0.0)
+                euro_value_at_tau = bs_european_price(
+                    exercise_spot, K, r, q, sigma, remaining_T, option_type
+                )
                 y_samples = np.exp(-r * exercise_time) * euro_value_at_tau
                 y_expectation = bs_european_price(S0, K, r, q, sigma, T, option_type)
             
@@ -205,3 +241,120 @@ class LeastSquaresMonteCarlo:
         if not hasattr(self, '_cached_cashflow'):
             raise RuntimeError("Call pricer(cache=True) first before retrieving exercise decisions.")
         return self._cached_cashflow
+    
+    
+
+    def swing_pricer(self, T: float, n_steps: int, n_paths: int, rng=None, use_antithetic: bool = False,
+                     contract_prices: np.ndarray = None, simulation_times: np.ndarray = None, 
+                     DCQ: float = 1.0, Ed: int = 1, ToP_rights: int = 0) -> tuple:
+        """
+        Prices a natural gas swing option with volume constraints using Least Squares Monte Carlo.
+        Assumes every step in the simulation grid is a valid daily exercise opportunity.
+        
+        Args:
+            T: float, total time to maturity (in years).
+            n_steps: int, number of discrete time steps.
+            n_paths: int, number of Monte Carlo paths to simulate.
+            rng: np.random.Generator, random number generator instance.
+            use_antithetic: bool, if True, uses antithetic variates for variance reduction.
+            
+            contract_prices: 1D np.ndarray of shape (n_steps + 1,). The fixed strike price 
+                or forward curve value at each time step.
+            simulation_times: 1D np.ndarray, optional. A custom time grid passed directly to 
+                the simulator. If provided, overrides T and n_steps. Must match the length 
+                of contract_prices.
+                
+            DCQ: float, Daily Contract Quantity (maximum volume allowed per exercise).
+            Ed: int, total number of exercise rights available (Annual Contract Quantity / DCQ).
+            ToP_rights: int, minimum number of times the option MUST be exercised to avoid 
+                penalties (Take-or-Pay Volume / DCQ).
+                
+        Returns:
+            price: float, estimated option value at t=0.
+            stderr: float, standard error of the Monte Carlo estimate.
+        """
+        # Setup: time grid, simulated paths, spreads (S_t = CP_t - P_t), discount factors
+        time_grid, paths = self.process.simulate(T, n_steps, n_paths, rng, use_antithetic=use_antithetic, simulation_times=simulation_times)
+        n_steps = len(time_grid) - 1
+        T = float(time_grid[-1])
+        
+        if len(contract_prices) != n_steps + 1:
+            raise ValueError("contract_prices must have a length of n_steps + 1!!!")
+        
+        dfs = np.exp(-self.process.r * np.diff(time_grid))
+        
+        # LSM algorithm for swing options: pp. 5-10, Hanfeld & Schlüter (2016)
+        # Set up a 2d backward for loop for the deterministic state variable: q_{n,t} (cumulative offtake, n=offtake level, i.e., amount of gas purchased).
+        # Run LSM for each q_{n,t} node. X is the bases with S_t, Y is ACCF_t+1 (all discounted realized future cash flows from t+1 to T)
+        # Note: the second state variable is S_t (spread), random.
+        # Optimal decision rule: argmax_{a_t∈{0, DCQ_t}} {a_t*(CP_t - P_t) +  E hat_t+1[S_t, q_{n,t} + a_t]}, where
+        # a_t*(CP_t - P_t) is the running reward from the action a_t, and E hat_t+1 is the continuation value, or the estimated value function
+        
+        # Step 1: Initialize 2d discounted cash flow matrix: (Ed + 1, n_paths)
+        dsc_cashflow = np.zeros((Ed + 1, n_paths))
+        # Hard rule: any offtake level n at maturity strictly below ToP_rights is invalid
+        for n in range(ToP_rights):
+            dsc_cashflow[n, :] = -np.inf
+
+        # Backward Induction
+        for t in range(n_steps - 1, -1, -1):
+            # Discount dsc_cashflow matrix from t+1
+            dsc_cashflow *= dfs[t]
+            new_dsc_cashflow = np.copy(dsc_cashflow)
+            
+            # Calculate spread for the CURRENT time step across all paths using the payoff class
+            current_spread = self.payoff_function(paths[:, t], contract_prices[t])
+
+            # Initiate 2d continuation_matrix for the NEXT time step. dim 0: offtake levels; dim 1: paths.
+            # Note: We initialize a new continuation_matrix for each new time step (no time dimension).
+            continuation_matrix = np.zeros((Ed + 1, n_paths))
+            
+            # Calculate REACHABLE boundaries for CURRENT node q_{n,t}, n = cumulative offtake level
+            remaining_steps = n_steps - t 
+            min_n = max(0, ToP_rights - remaining_steps) # e.g. if only have 2 remaining days while ToP=3, will be penalized (unreachable state)
+            max_n = min(t, Ed) # e.g. can't reach offtake level n=5 at t=2 or if Ed=2
+            
+            # Pick all REACHABLE NEXT nodes and run LSM for each of them
+            max_next_n = min(t + 1, Ed)
+            for m in range(min_n, max_next_n + 1):
+                y_all = dsc_cashflow[m, :]
+                valid_mask = np.isfinite(y_all) # Filter out invalid (-inf) paths
+                # Update continuation value at NEXT time step t+1 for offtake level m
+                if np.any(valid_mask):
+                    continuation_matrix[m, valid_mask] = self.basis_function.fit_predict(current_spread[valid_mask], y_all[valid_mask])
+                    continuation_matrix[m, ~valid_mask] = -np.inf # Carry over the infinite penalty to invalid paths
+                else:
+                    continuation_matrix[m, :] = -np.inf
+            
+
+            # For all valid CURRENT cumulative offtake levels q_{n,t}, decide whether to exercise or wait.
+            # Plug a_t∈{0, DCQ_t} into a_t * S_t +  E hat_t+1[S_t, q_{n,t} + a_t] and find the better a_t
+            for n in range(min_n, max_n + 1):
+                # Hard rule enforcement: If waiting leads to an invalid state next step, wait value is -inf
+                if n < ToP_rights - (remaining_steps - 1):
+                    value_wait = np.full(n_paths, -np.inf)
+                else:
+                    value_wait = continuation_matrix[n, :]
+                
+                # If Ed rights are not used up, calculate exercise value
+                if n < Ed:
+                    continuation = continuation_matrix[n + 1, :]
+                    value_exercise = (current_spread * DCQ) + continuation
+                else:
+                    value_exercise = np.full(n_paths, -np.inf)
+
+                # Evaluate exercise decision across all paths
+                exercise_mask = value_exercise > value_wait
+                
+                # Matrix update using REALIZED cash flows
+                if n < Ed:
+                    new_dsc_cashflow[n, exercise_mask] = (current_spread[exercise_mask] * DCQ) + dsc_cashflow[n + 1, exercise_mask]
+                new_dsc_cashflow[n, ~exercise_mask] = dsc_cashflow[n, ~exercise_mask]
+                
+            dsc_cashflow = new_dsc_cashflow   
+              
+        # Final Option Value
+        price = np.mean(dsc_cashflow[0, :])
+        stderr = np.std(dsc_cashflow[0, :], ddof=1) / np.sqrt(n_paths) if n_paths > 1 else 0.0
+        
+        return price, stderr

@@ -94,3 +94,21 @@ class AmericanMaxCall:
         """
         max_price = np.max(asset_prices, axis=1)
         return np.maximum(max_price - self.strike, 0.0)
+
+class SwingSpread:
+    def __init__(self, option_type: str = "call"):
+        """
+        Calculates the raw spread (difference between spot price and contract price).
+        option_type: str, call/put
+        """
+        self.option_type = option_type.lower()
+
+    def __call__(self, spot_prices: np.ndarray, contract_price: float) -> np.ndarray:
+        """
+        spot_prices: array of spot prices at the current time step
+        contract_price: the specific strike/contract price at the current time step
+        """
+        if self.option_type == "put":
+            return contract_price - spot_prices
+        else:
+            return spot_prices - contract_price
