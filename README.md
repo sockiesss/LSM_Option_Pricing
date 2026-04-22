@@ -153,5 +153,3 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Acknowledgements
 - Inspiration and repository structure: `luphord/longstaff_schwartz` (see References).
-## Acknowledgements
-- Inspiration and repository structure: `luphord/longstaff_schwartz` (see References).
