@@ -24,7 +24,7 @@ class VanillaPayoff:
 class MaxCallFeatures:
     """
     Features for American call on maximum of N assets.
-    Transforms N asset prices → 3N+4 manually crafted features.
+    Transforms N asset prices to 3N+4 manually crafted features.
     See Longstaff-Schwartz (2001) pp. 141-142 for the five-asset case.
     """
     
@@ -45,7 +45,7 @@ class MaxCallFeatures:
         adjacent products, all-product
         """
         n_paths, n_assets = asset_prices.shape
-        n_features = 3 * n_assets + 4
+        n_features = 3 * n_assets + 3
         features = np.zeros((n_paths, n_features))
         
         # Sort all paths at once
@@ -55,10 +55,10 @@ class MaxCallFeatures:
         
         idx = 0
         
-        # Constant + 5 Hermite polynomials in max
-        hermite_max = hermite.hermvander(s_max, 5)  # (n_paths, 6)
-        features[:, idx:idx+6] = hermite_max
-        idx += 6
+        # 5 Hermite polynomials in max (constant is handled in the BaseRegression class)
+        hermite_max = hermite.hermvander(s_max, 5)[:, 1:]  # (n_paths, 5)
+        features[:, idx:idx+5] = hermite_max
+        idx += 5
         
         # Raw states 2nd through Nth
         features[:, idx:idx+n_assets-1] = s_rest
