@@ -24,7 +24,7 @@ class VanillaPayoff:
 class MaxCallFeatures:
     """
     Features for American call on maximum of N assets.
-    Transforms N asset prices to 3N+4 manually crafted features.
+    Transforms N asset prices to 3N+3 manually crafted features.
     See Longstaff-Schwartz (2001) pp. 141-142 for the five-asset case.
     """
     
@@ -39,7 +39,7 @@ class MaxCallFeatures:
             asset_prices: (n_paths, N) where N >= 2
         
         Returns:
-            features: (n_paths, 3N+4)
+            features: (n_paths, 3N+3)
             
         Features: constant, 5 Hermite in max, raw 2nd-Nth, squares of 2nd-Nth, 
         adjacent products, all-product
