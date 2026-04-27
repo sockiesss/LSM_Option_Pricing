@@ -145,11 +145,14 @@ Contributions are welcome! Please fork the repo, make changes, and submit a pull
 This project is licensed under the MIT License - see the LICENSE file for details.
 
 ## References
-- [Longstaff-Schwartz (2001)](https://academic.oup.com/rfs/article-abstract/14/1/113/1606182): Original LSM paper.
-- [Rasmussen (2005)](https://www.sciencedirect.com/science/article/pii/S0378426604001514): Control variates for American options.
-- [Woo et al. (2019)](https://www.sciencedirect.com/science/article/pii/S0167947318301788): Leave-one-out LSM.
-- [Glasserman (2004)](https://www.springer.com/gp/book/9780387004518): Monte Carlo Methods in Financial Engineering.
-- [GitHub: luphord/longstaff_schwartz](https://github.com/luphord/longstaff_schwartz): Another LSM implementation.
+- [Longstaff, F. A., and E. S. Schwartz (2001). "Valuing American Options by Simulation: A Simple Least-Squares Approach."](https://people.math.ethz.ch/~hjfurrer/teaching/LongstaffSchwartzAmericanOptionsLeastSquareMonteCarlo.pdf): Seminal LSM paper.
+- [Broadie, M., and P. Glasserman (2004). "A Stochastic Mesh Method for Pricing High-Dimensional American Options." Journal of Computational Finance.](https://www.columbia.edu/~mnb2/broadie/Assets/mesh_working_paper.pdf): Multi-asset American max call benchmarks.
+- [Jaillet, P., Ronn, E. I., and S. Tompaidis (2004). "Valuation of Commodity-Based Swing Options."](https://pubsonline.informs.org/doi/10.1287/mnsc.1040.0240): American equivalency and European strip bounds for swing options.
+- [Hanfeld, M., and S. Schlüter (2016). "Operating a swing option on today's gas markets: How least squares Monte Carlo works and why it is beneficial." Working Paper.](https://www.econstor.eu/bitstream/10419/146758/1/868308544.pdf): Detailed backward induction logic for the $q_{n,t}$ offtake levels and the 2D state grid used in our swing_pricer.
+- [Glasserman, P. (2004). Monte Carlo Methods in Financial Engineering.](https://www.springer.com/gp/book/9780387004518): Quantos and other payoff structures, critique about LSM, etc.
+- [Rasmussen, H. O. (2005). "Control Variates for American Options."](https://ideas.repec.org/a/rsk/journ0/2160484.html): Control variates for American options sampled at exercise.
+- [Woo, R., et al. (2019). "Leave-one-out Least Squares Monte Carlo."](https://arxiv.org/abs/1810.02071): Leave-one-out LSM.
+- [GitHub: luphord/longstaff_schwartz. "An implementation of the Longstaff-Schwartz algorithm for American option pricing."](https://github.com/luphord/longstaff_schwartz): Another LSM implementation.
 
 ## Acknowledgements
 - Inspiration and repository structure: `luphord/longstaff_schwartz` (see References).
