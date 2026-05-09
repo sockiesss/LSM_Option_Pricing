@@ -1,21 +1,26 @@
 # American Option Pricing Via Least Squares Monte Carlo
 
 ## Project Goal
-This project implements a high-performance pricing engine for American and Bermudan options using the **Least Squares Monte Carlo (LSM)** approach. The primary focus is on enhancing the standard Longstaff-Schwartz (2001) method with advanced variance reduction techniques, specifically **Control Variates** and **Leave-One-Out (LOO)** regression to reduce in-sample bias and pricing error.
+This project implements a high-performance pricing engine for American and Bermudan options using the **Least Squares Monte Carlo (LSM)** approach. 
 
-The engine can also be applied to other payoff structures, such as multi-asset max American calls, swing options, and quantos.
+The primary focus is on enhancing the standard Longstaff-Schwartz (2001) method with advanced variance reduction techniques, specifically **Control Variates** and **Leave-One-Out (LOO)** regression to reduce pricing error and in-sample bias. The engine can also be applied to other payoff structures, such as multi-asset max American calls, swing options, quantos, etc.
 
 ## Features
-- **Core LSM Algorithm**: Backward induction with regression-based continuation value estimation.
-- **Variance Reduction**: Antithetic variates, control variates (European options sampled at maturity or exercise times).
-- **Regression Bases**: Laguerre polynomials and power polynomials for basis functions.
-- **Multi-Asset Support**: Handles correlated assets via Cholesky decomposition.
-- **Flexible Payoffs**: Vanilla puts/calls, max calls, swing options.
-- **Benchmarks**: Comparison against Binomial Trees, Finite Difference Methods (QuantLib), and Black-Scholes.
-- **Performance**: Optimized for speed and accuracy with configurable paths and steps.
+* **Core LSM Algorithm**: Backward induction with regression-based continuation value estimation.
+* **Variance and Bias Reduction**: Antithetic variates, control variates (European options sampled at maturity or exercise times), and Leave-One-Out (LOO) cross-validation to eliminate look-ahead bias.
+* **Regression Bases**: Laguerre polynomials and power polynomials for basis functions.
+* **Multi-Asset Support**: Handles correlated assets via Cholesky decomposition.
+* **Flexible Payoffs**: Vanilla puts/calls, max calls, swing options.
+* **Benchmarks**: Comparison against Binomial Trees, Finite Difference Methods (QuantLib), and Black-Scholes.
+* **Performance**: Optimized for speed and accuracy with configurable paths and steps.
+
 
 ## Project Structure
-```
+```text
+├── .github/
+│   └── workflows/
+│       ├── ci.yml              # GitHub Actions automated testing
+│       └── publish.yml         # PyPI publishing pipeline
 ├── LSM/
 │   ├── __init__.py
 │   ├── algorithms.py       # Core LeastSquaresMonteCarlo class
@@ -25,124 +30,84 @@ The engine can also be applied to other payoff structures, such as multi-asset m
 │   ├── regression_bases.py # Laguerre and Power polynomial bases
 │   └── stochastic_processes.py # GBM simulation with correlations
 ├── notebooks/
-│   ├── tests.ipynb         # Benchmark tests vs Finite Difference Methods
-│   └── analysis.ipynb      # Convergence and error analysis
-├── data/                   # Benchmark result CSVs
+│   ├── demo.ipynb          # Quick start and Colab demonstration
+│   └── tests.ipynb         # Benchmark tests and advanced payoffs
+├── tests/
+│   └── test_lsm.py         # Pytest suite for CI/CD
+├── pyproject.toml          # Build and dependency configuration
 └── README.md
+
 ```
 
+
 ## Installation
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/sockiesss/LSM_Option_Pricing.git
-   cd LSM_Option_Pricing
-   ```
 
-2. Install dependencies:
-   ```bash
-   pip install numpy scipy pandas matplotlib jupyter
-   ```
-   Optional: For QuantLib benchmarks, install QuantLib-Python:
-   ```bash
-   pip install QuantLib
-   ```
+You can install the package via pip:
 
-3. (Optional) Set up a virtual environment:
-   ```bash
-   python -m venv lsm_env
-   source lsm_env/bin/activate  # On Windows: lsm_env\Scripts\activate
-   pip install -r requirements.txt
-   ```
+```bash
+pip install lsm-option-pricing
 
-## Usage
+```
+
+## Quick Start
+
 Import the modules and create an LSM engine:
 
 ```python
+import numpy as np
 from LSM.stochastic_processes import GeometricBrownianMotion
 from LSM.payoffs import VanillaPayoff
 from LSM.regression_bases import LaguerrePolynomials
 from LSM.algorithms import LeastSquaresMonteCarlo
 
-# Define parameters
-S0 = 36.0
-K = 40.0
-r = 0.06
-q = 0.0
-sigma = 0.2
-T = 1.0
-n_steps = 50
-n_paths = 10000
-
 # Set up process, payoff, and basis
-gbm = GeometricBrownianMotion(S0=S0, r=r, q=q, sigma=sigma)
-payoff = VanillaPayoff(strike=K, option_type="put")
+gbm = GeometricBrownianMotion(S0=36.0, r=0.06, q=0.0, sigma=0.2)
+payoff = VanillaPayoff(strike=40.0, option_type="put")
 basis = LaguerrePolynomials(degree=3)
 
-# Create LSM engine
+# Create LSM engine and price option
 lsm = LeastSquaresMonteCarlo(process=gbm, payoff_function=payoff, basis_function=basis)
+price, stderr = lsm.pricer(T=1.0, n_steps=50, n_paths=10000)
 
-# Price the option
-price, stderr = lsm.pricer(T=T, n_steps=n_steps, n_paths=n_paths)
 print(f"American Put Price: {price:.4f} ± {stderr:.4f}")
+
 ```
 
-For control variates:
-```python
-price_cv, stderr_cv = lsm.pricer(T=T, n_steps=n_steps, n_paths=n_paths, control_variate='european_at_exercise')
-```
+## API Reference
 
-For swing options:
-```python
-import numpy as np
-from LSM.payoffs import SwingSpread
-from LSM.regression_bases import PowerPolynomials
+### `LeastSquaresMonteCarlo.pricer()`
 
-# Define swing payoff and contract prices
-swing_payoff = SwingSpread(option_type="call")  # Spread = S_t - contract_price
-contract_prices = np.linspace(50, 55, n_steps + 1)  # Example forward curve
+Prices the option using the Least Squares Monte Carlo algorithm.
 
-# Use power-polynomial basis (safe for negative spreads)
-basis_swing = PowerPolynomials(degree=3)
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `T` | float | Time to maturity in years. |
+| `n_steps` | int | Number of time steps for the simulation. |
+| `n_paths` | int | Number of Monte Carlo paths to generate. |
+| `control_variate` | str or None | Variance reduction method (e.g., `'european_at_exercise'`). |
+| `use_loo` | bool | Whether to apply Leave-One-Out bias reduction (default: `False`). |
 
-# Create LSM engine for swing
-lsm_swing = LeastSquaresMonteCarlo(process=gbm, payoff_function=swing_payoff, basis_function=basis_swing)
+**Returns:** A tuple `(price, std_err)` containing the estimated option price and the standard error.
 
-# Price swing option
-price_swing, stderr_swing = lsm_swing.swing_pricer(
-   T=T, n_steps=n_steps, n_paths=n_paths, 
-   contract_prices=contract_prices, DCQ=1.0, Ed=5, ToP_rights=2
-)
-print(f"Swing Option Price: {price_swing:.4f} ± {stderr_swing:.4f}")
-```
 
-## Examples
-- **Basic American Put**: See `notebooks/tests.ipynb` for sanity checks and benchmarks.
-- **Table 1 Replication**: Replicates Longstaff-Schwartz (2001) Table 1 with FDM comparisons.
-- **Random Benchmarks**: Tests across various parameters for accuracy.
-- **Moneyness Analysis**: Evaluates performance for ITM/ATM/OTM options.
+## Demo
+An interactive demo showing error convergence and basic pricing is available here:
 
-Run the notebooks:
-```bash
-jupyter notebook notebooks/tests.ipynb
-```
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/sockiesss/LSM_Option_Pricing/blob/main/notebooks/demo.ipynb)
 
 ## Dependencies
-- Python 3.8+
-- NumPy
-- SciPy
-- Pandas (for data handling)
-- Matplotlib (for plotting)
-- Jupyter (for notebooks)
-- QuantLib (optional, for FDM benchmarks)
 
-## Testing
-Run benchmarks in `notebooks/tests.ipynb` to verify against known results.
+* Python 3.8+
+* NumPy
+* SciPy
+* Pandas (for data handling)
+* Matplotlib (for plotting)
+* Jupyter (for notebooks)
+* QuantLib (optional, for FDM benchmarks)
 
-## Contributing
-Contributions are welcome! Please fork the repo, make changes, and submit a pull request.
 
 ## License
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the MIT License (see the LICENSE file for details).
 
 ## References
 - [Longstaff, F. A., and E. S. Schwartz (2001). "Valuing American Options by Simulation: A Simple Least-Squares Approach."](https://people.math.ethz.ch/~hjfurrer/teaching/LongstaffSchwartzAmericanOptionsLeastSquareMonteCarlo.pdf): Seminal LSM paper.
