@@ -273,7 +273,7 @@ class LeastSquaresMonteCarlo:
             price: float, estimated option value at t=0.
             stderr: float, standard error of the Monte Carlo estimate.
         """
-        # Setup: time grid, simulated paths, spreads (S_t = CP_t - P_t), discount factors
+        # Setup: time grid, simulated paths, spreads (e.g., S_t = CP_t - P_t if put), discount factors
         time_grid, paths = self.process.simulate(T, n_steps, n_paths, rng, use_antithetic=use_antithetic, simulation_times=simulation_times)
         n_steps = len(time_grid) - 1
         T = float(time_grid[-1])
