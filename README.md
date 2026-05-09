@@ -97,7 +97,7 @@ An interactive demo showing error convergence and basic pricing is available her
 
 ## Dependencies
 
-* Python 3.8+
+* Python
 * NumPy
 * SciPy
 * Pandas (for data handling)
