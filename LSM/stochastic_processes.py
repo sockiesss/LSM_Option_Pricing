@@ -164,14 +164,18 @@ class QuantoGBM:
         paths_base = np.zeros((n_base, n_steps + 1), dtype=np.float64)
         paths_base[:, 0] = self.S0
 
-        for t in range(1, n_steps + 1):
-            paths_base[:, t] = paths_base[:, t - 1] * np.exp(drifts[t - 1] + diffs[t - 1] * Z[:, t - 1])
+        # for t in range(1, n_steps + 1):
+        #     paths_base[:, t] = paths_base[:, t - 1] * np.exp(drifts[t - 1] + diffs[t - 1] * Z[:, t - 1])
+        log_returns_base = drifts + diffs * Z
+        paths_base[:, 1:] = self.S0 * np.exp(np.cumsum(log_returns_base, axis=1))
 
         if use_antithetic:
             paths_anti = np.zeros((n_base, n_steps + 1), dtype=np.float64)
             paths_anti[:, 0] = self.S0
-            for t in range(1, n_steps + 1):
-                paths_anti[:, t] = paths_anti[:, t - 1] * np.exp(drifts[t - 1] - diffs[t - 1] * Z[:, t - 1])
+            # for t in range(1, n_steps + 1):
+            #     paths_anti[:, t] = paths_anti[:, t - 1] * np.exp(drifts[t - 1] - diffs[t - 1] * Z[:, t - 1])
+            log_returns_anti = drifts - diffs * Z
+            paths_anti[:, 1:] = self.S0 * np.exp(np.cumsum(log_returns_anti, axis=1))
             paths = np.vstack([paths_base, paths_anti])
         else:
             paths = paths_base
@@ -244,9 +248,20 @@ class QuantoStochasticRatesProcess:
         if rng is None:
             rng = np.random.default_rng()
 
-        dt = T / n_steps
-        sqdt = np.sqrt(dt)
-        time_grid = np.linspace(0.0, T, n_steps + 1)
+        # dt = T / n_steps
+        # sqdt = np.sqrt(dt)
+        # time_grid = np.linspace(0.0, T, n_steps + 1)
+        if simulation_times is not None:
+            time_grid = np.asarray(simulation_times, dtype=np.float64)
+            n_steps = len(time_grid) - 1
+            if n_steps <= 0:
+                raise ValueError("simulation_times must contain at least two time points.")
+            dts = np.diff(time_grid)
+        else:
+            time_grid = np.linspace(0.0, T, n_steps + 1)
+            dts = np.full(n_steps, T / n_steps, dtype=np.float64)
+
+        sqdts = np.sqrt(dts)
 
         if use_antithetic:
             n_base = n_paths // 2
@@ -262,6 +277,9 @@ class QuantoStochasticRatesProcess:
         states_base[:, 0, 2] = self.rf0
 
         for t in range(1, n_steps + 1):
+            dt = dts[t - 1] 
+            sqdt = sqdts[t - 1]
+
             s_prev  = states_base[:, t - 1, 0]
             rd_prev = states_base[:, t - 1, 1]
             rf_prev = states_base[:, t - 1, 2]
