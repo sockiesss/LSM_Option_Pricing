@@ -99,9 +99,16 @@ class LeastSquaresMonteCarlo:
             exercise_time = np.full(n_paths, T, dtype=np.float64)
             exercise_spot = paths[:, -1].copy()
 
-        dfs = np.exp(-self.process.r * np.diff(time_grid))  # precompute; supports non-uniform grids
+        use_pathwise_discount = hasattr(self.process, "discount_step")
+        if not use_pathwise_discount:
+            dfs = np.exp(-self.process.r * np.diff(time_grid))  # precompute; supports non-uniform grids
+
         for t in range(n_steps - 1, -1, -1):
-            dsc_cashflow *= dfs[t]
+            if use_pathwise_discount:
+                dt = float(time_grid[t + 1] - time_grid[t])
+                dsc_cashflow *= self.process.discount_step(paths, t, dt)
+            else:
+                dsc_cashflow *= dfs[t]
 
             # Bermudan: only allow exercise at specified dates
             if exercise_set is not None and t not in exercise_set:
@@ -174,8 +181,8 @@ class LeastSquaresMonteCarlo:
 
         # Optional European control variate
         if control_variate is not None:
-            if create_features is not None or paths.ndim != 2:
-                print("Warning: Control variate is currently only implemented for single-asset options without custom features. Skipping control variate.")
+            if paths.ndim != 2 or "Quanto" in self.process.__class__.__name__:
+                print("Warning: Control variate is currently only implemented for standard single-asset options. Skipping control variate.")
                 if cache:
                     self._cached_cashflow = cashflow_matrix
                 return price, stderr
@@ -227,6 +234,8 @@ class LeastSquaresMonteCarlo:
 
         return price, stderr
     
+
+
     def get_cashflow(self) -> np.ndarray:
         """
         Retrieve the cached cashflow matrix from the last pricer() call.

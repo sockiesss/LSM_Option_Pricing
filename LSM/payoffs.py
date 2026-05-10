@@ -112,3 +112,113 @@ class SwingSpread:
             return contract_price - spot_prices
         else:
             return spot_prices - contract_price
+
+# -----------------------------------------------------------------------------
+# Quanto payoff helpers
+# -----------------------------------------------------------------------------
+class CompositeCall:
+    """
+    Call payoff applied to either a 1D stock path or one selected column of a
+    multi-dimensional state.
+
+    For a normal stock path:
+        payoff = max(S - K, 0)
+
+    For a composite state such as [S, rd, rf]:
+        payoff = max(state[:, column] - K, 0)
+    """
+    def __init__(self, strike: float, column: int = 0):
+        self.strike = float(strike)
+        self.column = int(column)
+        self.option_type = "call"
+
+    def _select_underlying(self, state):
+        state = np.asarray(state)
+        if state.ndim == 1:
+            return state
+        return state[:, self.column]
+
+    def __call__(self, state):
+        underlying = self._select_underlying(state)
+        return np.maximum(underlying - self.strike, 0.0)
+
+
+class CompositePut:
+    """
+    Put payoff applied to either a 1D stock path or one selected column of a
+    multi-dimensional state.
+
+    For a normal stock path:
+        payoff = max(K - S, 0)
+
+    For a composite state such as [S, rd, rf]:
+        payoff = max(K - state[:, column], 0)
+    """
+    def __init__(self, strike: float, column: int = 0):
+        self.strike = float(strike)
+        self.column = int(column)
+        self.option_type = "put"
+
+    def _select_underlying(self, state):
+        state = np.asarray(state)
+        if state.ndim == 1:
+            return state
+        return state[:, self.column]
+
+    def __call__(self, state):
+        underlying = self._select_underlying(state)
+        return np.maximum(self.strike - underlying, 0.0)
+
+
+class QuantoCall(CompositeCall):
+    """
+    Fixed-FX quanto call payoff.
+
+    The selected underlying payoff is converted using a fixed FX rate:
+
+        payoff = fx_fix * max(S - K, 0)
+    """
+    def __init__(self, strike: float, fx_fix: float, column: int = 0):
+        super().__init__(strike=strike, column=column)
+        self.fx_fix = float(fx_fix)
+
+    def __call__(self, state):
+        return self.fx_fix * super().__call__(state)
+
+
+class QuantoPut(CompositePut):
+    """
+    Fixed-FX quanto put payoff.
+
+    The selected underlying payoff is converted using a fixed FX rate:
+
+        payoff = fx_fix * max(K - S, 0)
+    """
+    def __init__(self, strike: float, fx_fix: float, column: int = 0):
+        super().__init__(strike=strike, column=column)
+        self.fx_fix = float(fx_fix)
+
+    def __call__(self, state):
+        return self.fx_fix * super().__call__(state)
+
+
+class QuantoRateFeatures:
+    """
+    Feature map for stochastic-rate quanto state:
+        state[:, 0] = stock
+        state[:, 1] = domestic short rate
+        state[:, 2] = foreign short rate
+    """
+    def __init__(self, strike: float):
+        self.strike = float(strike)
+
+    def __call__(self, state: np.ndarray) -> np.ndarray:
+        s  = state[:, 0] / self.strike
+        rd = state[:, 1]
+        rf = state[:, 2]
+
+        return np.column_stack([
+            s, rd, rf,
+            s**2, rd**2, rf**2,
+            s * rd, s * rf, rd * rf
+        ])
