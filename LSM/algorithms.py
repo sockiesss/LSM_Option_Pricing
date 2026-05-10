@@ -181,8 +181,8 @@ class LeastSquaresMonteCarlo:
 
         # Optional European control variate
         if control_variate is not None:
-            if create_features is not None or paths.ndim != 2:
-                print("Warning: Control variate is currently only implemented for single-asset options without custom features. Skipping control variate.")
+            if paths.ndim != 2 or "Quanto" in self.process.__class__.__name__:
+                print("Warning: Control variate is currently only implemented for standard single-asset options. Skipping control variate.")
                 if cache:
                     self._cached_cashflow = cashflow_matrix
                 return price, stderr

@@ -305,6 +305,9 @@ class QuantoStochasticRatesProcess:
             states_anti[:, 0, 2] = self.rf0
 
             for t in range(1, n_steps + 1):
+                dt = dts[t - 1] 
+                sqdt = sqdts[t - 1]
+                
                 s_prev  = states_anti[:, t - 1, 0]
                 rd_prev = states_anti[:, t - 1, 1]
                 rf_prev = states_anti[:, t - 1, 2]
