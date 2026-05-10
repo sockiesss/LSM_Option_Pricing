@@ -136,12 +136,20 @@ class QuantoGBM:
         self.sigma_fx = float(sigma_fx)
         self.rho_sfx = float(rho_sfx)
 
-    def simulate(self, T, n_steps, n_paths, rng=None, use_antithetic=False):
+    def simulate(self, T, n_steps, n_paths, rng=None, use_antithetic=False, simulation_times=None):
         if rng is None:
             rng = np.random.default_rng()
 
-        dt = T / n_steps
-        time_grid = np.linspace(0.0, T, n_steps + 1)
+        if simulation_times is not None:
+            time_grid = np.asarray(simulation_times, dtype=np.float64)
+            n_steps = len(time_grid) - 1
+            if n_steps <= 0:
+                raise ValueError("simulation_times must contain at least two time points.")
+            dts = np.diff(time_grid)
+        else:
+            dt = T / n_steps
+            time_grid = np.linspace(0.0, T, n_steps + 1)
+            dts = np.full(n_steps, dt, dtype=np.float64)
 
         if use_antithetic:
             n_base = n_paths // 2
@@ -150,20 +158,20 @@ class QuantoGBM:
 
         Z = rng.normal(size=(n_base, n_steps))
         mu_q = self.r_for - self.q - self.rho_sfx * self.sigma_s * self.sigma_fx
-        drift = (mu_q - 0.5 * self.sigma_s**2) * dt
-        diff  = self.sigma_s * np.sqrt(dt)
+        drifts = (mu_q - 0.5 * self.sigma_s**2) * dts
+        diffs = self.sigma_s * np.sqrt(dts)
 
         paths_base = np.zeros((n_base, n_steps + 1), dtype=np.float64)
         paths_base[:, 0] = self.S0
 
         for t in range(1, n_steps + 1):
-            paths_base[:, t] = paths_base[:, t - 1] * np.exp(drift + diff * Z[:, t - 1])
+            paths_base[:, t] = paths_base[:, t - 1] * np.exp(drifts[t - 1] + diffs[t - 1] * Z[:, t - 1])
 
         if use_antithetic:
             paths_anti = np.zeros((n_base, n_steps + 1), dtype=np.float64)
             paths_anti[:, 0] = self.S0
             for t in range(1, n_steps + 1):
-                paths_anti[:, t] = paths_anti[:, t - 1] * np.exp(drift - diff * Z[:, t - 1])
+                paths_anti[:, t] = paths_anti[:, t - 1] * np.exp(drifts[t - 1] - diffs[t - 1] * Z[:, t - 1])
             paths = np.vstack([paths_base, paths_anti])
         else:
             paths = paths_base
@@ -232,7 +240,7 @@ class QuantoStochasticRatesProcess:
         self.correlation_matrix = np.asarray(correlation_matrix, dtype=np.float64)
         self.cholesky_factor = np.linalg.cholesky(self.correlation_matrix)
 
-    def simulate(self, T, n_steps, n_paths, rng=None, use_antithetic=False):
+    def simulate(self, T, n_steps, n_paths, rng=None, use_antithetic=False, simulation_times=None):
         if rng is None:
             rng = np.random.default_rng()
 

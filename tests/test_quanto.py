@@ -1,14 +1,13 @@
 import numpy as np
 
 from LSM.algorithms import LeastSquaresMonteCarlo
-from LSM.payoffs import VanillaPayoff, FixedFXQuantoPayoff, StateColumnPayoff, QuantoRateFeatures
+from LSM.payoffs import QuantoPut, QuantoRateFeatures
 from LSM.regression_bases import LaguerrePolynomials
 from LSM.stochastic_processes import QuantoGBM, QuantoStochasticRatesProcess
 
 
 def test_fixed_rate_quanto_pricer_runs():
-    base_put = VanillaPayoff(strike=100, option_type="put")
-    payoff = FixedFXQuantoPayoff(base_put, fx_fix=1.2)
+    payoff = QuantoPut(strike=100, fx_fix=1.2)
 
     process = QuantoGBM(
         S0=100,
@@ -26,7 +25,7 @@ def test_fixed_rate_quanto_pricer_runs():
         basis_function=LaguerrePolynomials(degree=3),
     )
 
-    price, stderr = engine.quanto_pricer(
+    price, stderr = engine.pricer(
         T=1.0,
         n_steps=10,
         n_paths=1000,
@@ -41,8 +40,7 @@ def test_fixed_rate_quanto_pricer_runs():
 
 
 def test_stochastic_rate_quanto_pricer_runs():
-    base_put = VanillaPayoff(strike=100, option_type="put")
-    payoff = StateColumnPayoff(base_put, column=0)
+    payoff = QuantoPut(strike=100, fx_fix=1.2, column=0)
 
     process = QuantoStochasticRatesProcess(
         S0=100,
@@ -66,7 +64,7 @@ def test_stochastic_rate_quanto_pricer_runs():
         basis_function=LaguerrePolynomials(degree=3),
     )
 
-    price, stderr = engine.quanto_pricer(
+    price, stderr = engine.pricer(
         T=1.0,
         n_steps=10,
         n_paths=1000,

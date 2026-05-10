@@ -116,73 +116,90 @@ class SwingSpread:
 # -----------------------------------------------------------------------------
 # Quanto payoff helpers
 # -----------------------------------------------------------------------------
-class ScaledPayoff:
+class CompositeCall:
     """
-    Generic wrapper that multiplies any existing payoff by a fixed scalar.
+    Call payoff applied to either a 1D stock path or one selected column of a
+    multi-dimensional state.
 
-    In the quanto setting, the scalar is usually the fixed FX conversion rate.
-    For clearer quanto code, prefer FixedFXQuantoPayoff below.
+    For a normal stock path:
+        payoff = max(S - K, 0)
 
-    Example:
-        vanilla_put = VanillaPayoff(strike=100, option_type="put")
-        scaled_put = ScaledPayoff(vanilla_put, scale=1.2)
+    For a composite state such as [S, rd, rf]:
+        payoff = max(state[:, column] - K, 0)
     """
-    def __init__(self, base_payoff, scale: float):
-        self.base_payoff = base_payoff
-        self.scale = float(scale)
+    def __init__(self, strike: float, column: int = 0):
+        self.strike = float(strike)
+        self.column = int(column)
+        self.option_type = "call"
 
-        # expose strike if underlying payoff has it, so existing normalization still works
-        if hasattr(base_payoff, "strike"):
-            self.strike = base_payoff.strike
+    def _select_underlying(self, state):
+        state = np.asarray(state)
+        if state.ndim == 1:
+            return state
+        return state[:, self.column]
 
     def __call__(self, state):
-        return self.scale * self.base_payoff(state)
+        underlying = self._select_underlying(state)
+        return np.maximum(underlying - self.strike, 0.0)
 
 
-class FixedFXQuantoPayoff(ScaledPayoff):
+class CompositePut:
     """
-    Fixed-FX quanto payoff wrapper.
+    Put payoff applied to either a 1D stock path or one selected column of a
+    multi-dimensional state.
 
-    This is the clearer name for the common quanto case where the underlying
-    payoff is paid in a foreign asset/currency and converted using a fixed FX
-    rate.
+    For a normal stock path:
+        payoff = max(K - S, 0)
 
-    Mathematically:
-        quanto_payoff(state) = fx_fix * base_payoff(state)
-
-    Example:
-        vanilla_put = VanillaPayoff(strike=100, option_type="put")
-        quanto_put = FixedFXQuantoPayoff(vanilla_put, fx_fix=1.2)
+    For a composite state such as [S, rd, rf]:
+        payoff = max(K - state[:, column], 0)
     """
-    def __init__(self, base_payoff, fx_fix: float):
-        super().__init__(base_payoff=base_payoff, scale=fx_fix)
+    def __init__(self, strike: float, column: int = 0):
+        self.strike = float(strike)
+        self.column = int(column)
+        self.option_type = "put"
+
+    def _select_underlying(self, state):
+        state = np.asarray(state)
+        if state.ndim == 1:
+            return state
+        return state[:, self.column]
+
+    def __call__(self, state):
+        underlying = self._select_underlying(state)
+        return np.maximum(self.strike - underlying, 0.0)
+
+
+class QuantoCall(CompositeCall):
+    """
+    Fixed-FX quanto call payoff.
+
+    The selected underlying payoff is converted using a fixed FX rate:
+
+        payoff = fx_fix * max(S - K, 0)
+    """
+    def __init__(self, strike: float, fx_fix: float, column: int = 0):
+        super().__init__(strike=strike, column=column)
         self.fx_fix = float(fx_fix)
 
+    def __call__(self, state):
+        return self.fx_fix * super().__call__(state)
 
 
-
-class StateColumnPayoff:
+class QuantoPut(CompositePut):
     """
-    Apply an existing 1D payoff to one selected column of a multi-dimensional state.
+    Fixed-FX quanto put payoff.
 
-    Example:
-        base_put = AmericanOption(strike=K, option_type="put")
-        stock_put = StateColumnPayoff(base_put, column=0)   # use stock only
-        quanto_put = ScaledPayoff(stock_put, scale=fx_fix)
+    The selected underlying payoff is converted using a fixed FX rate:
+
+        payoff = fx_fix * max(K - S, 0)
     """
-    def __init__(self, base_payoff, column: int = 0):
-        self.base_payoff = base_payoff
-        self.column = int(column)
-
-        if hasattr(base_payoff, "strike"):
-            self.strike = base_payoff.strike
+    def __init__(self, strike: float, fx_fix: float, column: int = 0):
+        super().__init__(strike=strike, column=column)
+        self.fx_fix = float(fx_fix)
 
     def __call__(self, state):
-        if isinstance(state, np.ndarray) and state.ndim == 2:
-            return self.base_payoff(state[:, self.column])
-        return self.base_payoff(state)
-
-
+        return self.fx_fix * super().__call__(state)
 
 
 class QuantoRateFeatures:
