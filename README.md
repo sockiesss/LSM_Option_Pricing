@@ -23,18 +23,19 @@ The primary focus is on enhancing the standard Longstaff-Schwartz (2001) method 
 │       └── publish.yml         # PyPI publishing pipeline
 ├── LSM/
 │   ├── __init__.py
-│   ├── algorithms.py       # Core LeastSquaresMonteCarlo class
-│   ├── binomial_tree.py    # CRR Binomial Tree for benchmarking
-│   ├── control_variate.py  # Black-Scholes European prices and control variate logic
-│   ├── payoffs.py          # Payoff classes (Vanilla, MaxCall, Swing)
-│   ├── regression_bases.py # Laguerre and Power polynomial bases
-│   └── stochastic_processes.py # GBM simulation with correlations
+│   ├── algorithms.py           # Core LeastSquaresMonteCarlo engine (American & Swing)
+│   ├── stochastic_processes.py # GBM, QuantoGBM, and Stochastic Rates processes
+│   ├── payoffs.py              # Vanilla, MaxCall, Swing, and Quanto payoffs/features
+│   ├── regression_bases.py     # Laguerre and Power polynomial bases
+│   ├── control_variate.py      # Black-Scholes European prices and CV logic
+│   └── binomial_tree.py        # CRR Binomial Tree for benchmarking
 ├── notebooks/
-│   ├── demo.ipynb          # Quick start and Colab demonstration
-│   └── tests.ipynb         # Benchmark tests and advanced payoffs
+│   ├── demo.ipynb              # Quick start and Colab demonstration
+│   └── tests.ipynb             # Benchmark tests and advanced payoffs
 ├── tests/
-│   └── test_lsm.py         # Pytest suite for CI/CD
-├── pyproject.toml          # Build and dependency configuration
+│   ├── test_lsm.py             # Pytest suite for core LSM functionality
+│   └── test_quanto.py          # Pytest suite for Quanto pricing and stochastic rates
+├── pyproject.toml              # Build metadata and dependencies
 └── README.md
 
 ```
