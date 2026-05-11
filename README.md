@@ -77,17 +77,48 @@ print(f"American Put Price: {price:.4f} ± {stderr:.4f}")
 
 ### `LeastSquaresMonteCarlo.pricer()`
 
-Prices the option using the Least Squares Monte Carlo algorithm.
+Prices the option using the standard Least Squares Monte Carlo algorithm. Evaluates the option by comparing immediate intrinsic value against the conditional expected continuation value.
 
-| Parameter | Type | Description |
-| --- | --- | --- |
-| `T` | float | Time to maturity in years. |
-| `n_steps` | int | Number of time steps for the simulation. |
-| `n_paths` | int | Number of Monte Carlo paths to generate. |
-| `control_variate` | str or None | Variance reduction method (e.g., `'european_at_exercise'`). |
-| `use_loo` | bool | Whether to apply Leave-One-Out bias reduction (default: `False`). |
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `T` | `float` | Required | Time to maturity in years. |
+| `n_steps` | `int` | Required | Number of discrete time steps for the simulation. |
+| `n_paths` | `int` | Required | Number of Monte Carlo paths to generate (generates `n_paths/2` pairs if `use_antithetic=True`). |
+| `rng` | `np.random.Generator` | `None` | NumPy random number generator instance for reproducible paths. |
+| `use_antithetic` | `bool` | `False` | If `True`, uses antithetic variates for variance reduction. |
+| `control_variate` | `str` | `None` | European option control variate method. Options: `'european_at_maturity'`, `'european_at_exercise'`, or `None`. |
+| `create_features` | `Callable` | `None` | Function to create custom basis features for regression (e.g., cross-terms for multi-asset or Quanto options). |
+| `cache` | `bool` | `False` | If `True`, caches the cash flow matrix allowing retrieval via `get_cashflow()`. |
+| `exercise_times` | `array-like` | `None` | Specific exercise times for Bermudan options (e.g., `[0.25, 0.5, 1.0]`). If `None`, assumes an American option (exercisable at every step). |
+| `simulation_times` | `array-like` | `None` | Custom time grid passed directly to the simulator. If provided, overrides `T` and `n_steps`. |
+| `use_loo` | `bool` | `False` | If `True`, applies Leave-One-Out (LOO) cross-validation to reduce in-sample regression bias. |
+
+
+### `LeastSquaresMonteCarlo.swing_pricer()`
+
+Prices a natural gas or electricity swing option with specific volume constraints. Assumes every step in the simulation grid is a valid daily exercise opportunity.
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `T` | `float` | Required | Total time to maturity in years. |
+| `n_steps` | `int` | Required | Number of discrete time steps. |
+| `n_paths` | `int` | Required | Number of Monte Carlo paths to simulate. |
+| `rng` | `np.random.Generator` | `None` | NumPy random number generator instance for reproducible paths. |
+| `use_antithetic` | `bool` | `False` | If `True`, uses antithetic variates for variance reduction. |
+| `contract_prices` | `np.ndarray` | `None` | 1D array of shape `(n_steps + 1,)` representing the fixed strike price or forward curve value at each time step. |
+| `simulation_times` | `np.ndarray` | `None` | Custom time grid. Overrides `T` and `n_steps`. Must exactly match the length of `contract_prices`. |
+| `DCQ` | `float` | `1.0` | Daily Contract Quantity (the maximum volume allowed per single exercise). |
+| `Ed` | `int` | `1` | Total number of exercise rights available (Annual Contract Quantity / DCQ). |
+| `ToP_rights` | `int` | `0` | Minimum number of times the option MUST be exercised to avoid Take-or-Pay penalties. |
+
+> **Note:**
+> * **"Bang-Bang" Exercise:** Decisions are strictly all-or-nothing (0 or exactly `DCQ`). Partial volume exercises are not supported.
+> * **Hard ToP Penalties:** Failing to meet `ToP_rights` invalidates the simulation path (assigns `-inf` value) rather than applying a proportional cash penalty.
+> * **No Operational Friction:** Assumes immediate exercise rights without advance notice periods, resting times, or dynamic capacity limits.
 
 **Returns:** A tuple `(price, std_err)` containing the estimated option price and the standard error.
+
+
 
 
 ## Demo
