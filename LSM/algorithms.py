@@ -42,6 +42,7 @@ class LeastSquaresMonteCarlo:
                rng: np.random.Generator = None,
                use_antithetic: bool = False,
                control_variate: str = None,
+               cv_oos: bool = True,
                create_features=None,
                cache: bool = False,
                exercise_times=None,
@@ -60,6 +61,7 @@ class LeastSquaresMonteCarlo:
             use_antithetic: if True, use antithetic variable variance reduction
             control_variate: if not None, use a European option as control variate. 
                 Options: None, 'european_at_maturity', 'european_at_exercise'
+            cv_oos: if True, only used to construct the European CV stopping time to prevent the in-sample bias
             create_features: function to create additional features for regression
             cache: if True, cache the cash flow matrix with exercise cash flows
             exercise_times: array-like exercise times, e.g. [0.25, 0.5, 0.75, 1.0] for quarterly Bermudan. 
@@ -172,13 +174,117 @@ class LeastSquaresMonteCarlo:
             if control_variate == 'european_at_exercise':
                 exercise_time[exercise_mask] = time_grid[t]
                 exercise_spot[exercise_mask] = paths[exercise_mask, t]
+        
+        x_samples = dsc_cashflow.copy()
 
         price = np.mean(dsc_cashflow)
         if n_paths > 1:
             stderr = np.std(dsc_cashflow, ddof=1) / np.sqrt(n_paths)
         else:
             stderr = 0.0
+        
+        fitted_betas = None
+        cv_exercise_time = None
+        cv_exercise_spot = None
 
+        if control_variate == "european_at_exercise" and cv_oos:
+            time_grid_fit, paths_fit = self.process.simulate(T, n_steps, n_paths, rng,use_antithetic=use_antithetic,simulation_times=simulation_times)
+            n_steps_fit = len(time_grid_fit) - 1
+            T_fit = float(time_grid_fit[-1])
+
+            if exercise_times is not None:
+                out_of_range = [tau for tau in exercise_times if tau < 0 or tau > T_fit]
+                if out_of_range:
+                    raise ValueError(f"exercise_times {out_of_range} outside [0, {T_fit}].")
+                exercise_set_fit = {
+                    int(np.argmin(np.abs(time_grid_fit - tau)))
+                    for tau in exercise_times
+                }
+            else:
+                exercise_set_fit = None
+
+            fitted_betas = {}
+            dsc_cashflow_fit = self.payoff_function(paths_fit[:, -1])
+            dfs_fit = np.exp(-self.process.r * np.diff(time_grid_fit))
+
+            # need two loops: one for fitted beta, another for out-of-sample stopping time
+            # first loop: generating fitted beta
+            for t in range(n_steps_fit - 1, -1, -1):
+                dsc_cashflow_fit *= dfs_fit[t]
+
+                if exercise_set_fit is not None and t not in exercise_set_fit:
+                    continue
+
+                immediate_payoff_fit = self.payoff_function(paths_fit[:, t])
+                itm_mask_fit = immediate_payoff_fit > 0
+
+                if not np.any(itm_mask_fit):
+                    continue
+
+                if create_features is None and hasattr(self.payoff_function, "strike"):
+                    strike = self.payoff_function.strike
+                    X_fit = paths_fit[itm_mask_fit, t] / strike
+                    A_fit = self.basis_function.design_matrix(X_fit)
+
+                elif create_features is None:
+                    X_fit = paths_fit[itm_mask_fit, t]
+                    A_fit = self.basis_function.design_matrix(X_fit)
+
+                else:
+                    features_fit = create_features(paths_fit[itm_mask_fit, t, :])
+                    A_fit = self.basis_function.design_matrix(features_fit)
+
+                y_fit = dsc_cashflow_fit[itm_mask_fit]
+
+                beta_fit, *_ = np.linalg.lstsq(A_fit, y_fit, rcond=None)
+                fitted_betas[t] = beta_fit
+
+                continuation_fit = np.zeros_like(immediate_payoff_fit, dtype=np.float64)
+                continuation_fit[itm_mask_fit] = A_fit @ beta_fit
+
+                exercise_mask_fit = immediate_payoff_fit > continuation_fit
+                dsc_cashflow_fit = np.where(exercise_mask_fit,immediate_payoff_fit,dsc_cashflow_fit)
+            
+            cv_exercise_time = np.full(n_paths, T, dtype=np.float64)
+            cv_exercise_spot = paths[:, -1].copy()
+
+            # second loop: generating out-of-sample stopping time
+            for t in range(n_steps - 1, -1, -1):
+
+                if exercise_set is not None and t not in exercise_set:
+                    continue
+
+                immediate_payoff = self.payoff_function(paths[:, t])
+                itm_mask = immediate_payoff > 0
+
+                if not np.any(itm_mask):
+                    continue
+
+                cv_continuation = np.zeros_like(immediate_payoff, dtype=np.float64)
+
+                if create_features is None and hasattr(self.payoff_function, "strike"):
+                    strike = self.payoff_function.strike
+                    X_cv = paths[itm_mask, t] / strike
+                    A_cv = self.basis_function.design_matrix(X_cv)
+
+                elif create_features is None:
+                    X_cv = paths[itm_mask, t]
+                    A_cv = self.basis_function.design_matrix(X_cv)
+
+                else:
+                    features_cv = create_features(paths[itm_mask, t, :])
+                    A_cv = self.basis_function.design_matrix(features_cv)
+
+                if fitted_betas is not None and t in fitted_betas:
+                    cv_continuation[itm_mask] = A_cv @ fitted_betas[t]
+                else:
+                    cv_continuation[itm_mask] = 0.0
+
+                cv_exercise_mask = immediate_payoff > cv_continuation
+
+                cv_exercise_time[cv_exercise_mask] = time_grid[t]
+                cv_exercise_spot[cv_exercise_mask] = paths[cv_exercise_mask, t]
+        
         # Optional European control variate
         if control_variate is not None:
             if paths.ndim != 2 or "Quanto" in self.process.__class__.__name__:
@@ -208,11 +314,19 @@ class LeastSquaresMonteCarlo:
 
             elif control_variate == "european_at_exercise":
                 # Rasmussen (2005) eq. (10)
-                remaining_T = np.maximum(T - exercise_time, 0.0)
+                # if using cv_oos, record two stopping time for CV
+                if cv_oos:
+                    tau_for_cv = cv_exercise_time
+                    spot_for_cv = cv_exercise_spot
+                else:
+                    tau_for_cv = exercise_time
+                    spot_for_cv = exercise_spot
+                
+                remaining_T = np.maximum(T - tau_for_cv, 0.0)
                 euro_value_at_tau = bs_european_price(
-                    exercise_spot, K, r, q, sigma, remaining_T, option_type
+                    spot_for_cv, K, r, q, sigma, remaining_T, option_type
                 )
-                y_samples = np.exp(-r * exercise_time) * euro_value_at_tau
+                y_samples = np.exp(-r * tau_for_cv) * euro_value_at_tau
                 y_expectation = bs_european_price(S0, K, r, q, sigma, T, option_type)
             
             else:
@@ -223,10 +337,16 @@ class LeastSquaresMonteCarlo:
             if cache:
                 self._cached_cv_beta = beta
                 self._cached_euro_closed = y_expectation
-                self._cached_exercise_time = exercise_time
-                self._cached_exercise_spot = exercise_spot
                 self._cached_paths = paths
                 self._cached_cv_samples = y_samples
+                if control_variate == "european_at_exercise":
+                    self._cached_exercise_time = exercise_time
+                    self._cached_exercise_spot = exercise_spot
+
+                    if cv_oos:
+                        self._cached_cv_exercise_time = cv_exercise_time
+                        self._cached_cv_exercise_spot = cv_exercise_spot
+                        self._cached_fitted_betas = fitted_betas
 
         # Cache cash flow matrix only if requested
         if cache:
