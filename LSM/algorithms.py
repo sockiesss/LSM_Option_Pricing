@@ -1,5 +1,6 @@
 import numpy as np
 from LSM.control_variate import bs_european_price, european_discounted_payoff, apply_control_variate
+import warnings
 
 class LeastSquaresMonteCarlo:
     """
@@ -79,6 +80,13 @@ class LeastSquaresMonteCarlo:
         n_steps = len(time_grid) - 1  # Recompute; may differ if times was provided
         T = float(time_grid[-1])
 
+        # Fast check for control variate compatibility
+        if control_variate is not None:
+            if paths.ndim != 2 or "Quanto" in self.process.__class__.__name__:
+                warnings.warn("Control variate is only implemented for standard 1D options. Overriding control_variate to None.", UserWarning)
+                control_variate = None
+                cv_oos = False
+
         # Convert actual time values to nearest time-grid indices
         if exercise_times is not None:
             out_of_range = [t for t in exercise_times if t < 0 or t > T]
@@ -106,6 +114,7 @@ class LeastSquaresMonteCarlo:
             dfs = np.exp(-self.process.r * np.diff(time_grid))  # precompute; supports non-uniform grids
 
         for t in range(n_steps - 1, -1, -1):
+            # Determisitic or stochastic discounting
             if use_pathwise_discount:
                 dt = float(time_grid[t + 1] - time_grid[t])
                 dsc_cashflow *= self.process.discount_step(paths, t, dt)
@@ -210,7 +219,12 @@ class LeastSquaresMonteCarlo:
             # need two loops: one for fitted beta, another for out-of-sample stopping time
             # first loop: generating fitted beta
             for t in range(n_steps_fit - 1, -1, -1):
-                dsc_cashflow_fit *= dfs_fit[t]
+                if use_pathwise_discount: # Check for stochastic discounting in the OOS loop
+                    dt_fit = float(time_grid_fit[t + 1] - time_grid_fit[t])
+                    dsc_cashflow_fit *= self.process.discount_step(paths_fit, t, dt_fit)
+                else:
+                    dsc_cashflow_fit *= dfs_fit[t]
+                #dsc_cashflow_fit *= dfs_fit[t]
 
                 if exercise_set_fit is not None and t not in exercise_set_fit:
                     continue
@@ -287,12 +301,6 @@ class LeastSquaresMonteCarlo:
         
         # Optional European control variate
         if control_variate is not None:
-            if paths.ndim != 2 or "Quanto" in self.process.__class__.__name__:
-                print("Warning: Control variate is currently only implemented for standard single-asset options. Skipping control variate.")
-                if cache:
-                    self._cached_cashflow = cashflow_matrix
-                return price, stderr
-
             required_attrs = ["strike", "option_type"]
             for attr in required_attrs:
                 if not hasattr(self.payoff_function, attr):
