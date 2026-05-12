@@ -42,11 +42,13 @@ class LeastSquaresMonteCarlo:
                rng: np.random.Generator = None,
                use_antithetic: bool = False,
                control_variate: str = None,
+               cv_oos: bool = True,
                create_features=None,
                cache: bool = False,
                exercise_times=None,
                simulation_times=None,
-               use_loo: bool = False) -> tuple:
+               use_loo: bool = False,
+               cv_two_path=None) -> tuple:
         """
         Monte Carlo simulation with regressions; uses backward induction 
         and compares continuation value and intrinsic value to decide whether
@@ -67,6 +69,12 @@ class LeastSquaresMonteCarlo:
             simulation_times: optional custom simulation time grid passed to process.simulate() as-is;
                    overrides T and n_steps. Use for non-uniform grids.
             use_loo: if True, use leave-one-out predictions for in-sample regression to reduce bias.
+<<<<<<< Updated upstream
+            cv_two_path: if True, only used to construct the European CV stopping time to prevent the in-sample bias
+=======
+            cv_oos: if True, only used to construct the European CV stopping time to prevent the in-sample bias
+
+>>>>>>> Stashed changes
             
         Returns:
             (price, stderr): option price estimate and standard error
@@ -99,16 +107,9 @@ class LeastSquaresMonteCarlo:
             exercise_time = np.full(n_paths, T, dtype=np.float64)
             exercise_spot = paths[:, -1].copy()
 
-        use_pathwise_discount = hasattr(self.process, "discount_step")
-        if not use_pathwise_discount:
-            dfs = np.exp(-self.process.r * np.diff(time_grid))  # precompute; supports non-uniform grids
-
+        dfs = np.exp(-self.process.r * np.diff(time_grid))  # precompute; supports non-uniform grids
         for t in range(n_steps - 1, -1, -1):
-            if use_pathwise_discount:
-                dt = float(time_grid[t + 1] - time_grid[t])
-                dsc_cashflow *= self.process.discount_step(paths, t, dt)
-            else:
-                dsc_cashflow *= dfs[t]
+            dsc_cashflow *= dfs[t]
 
             # Bermudan: only allow exercise at specified dates
             if exercise_set is not None and t not in exercise_set:
@@ -172,17 +173,131 @@ class LeastSquaresMonteCarlo:
             if control_variate == 'european_at_exercise':
                 exercise_time[exercise_mask] = time_grid[t]
                 exercise_spot[exercise_mask] = paths[exercise_mask, t]
+        
+        x_samples = dsc_cashflow.copy()
 
         price = np.mean(dsc_cashflow)
         if n_paths > 1:
             stderr = np.std(dsc_cashflow, ddof=1) / np.sqrt(n_paths)
         else:
             stderr = 0.0
+        
+        fitted_betas = None
+        cv_exercise_time = None
+        cv_exercise_spot = None
 
+<<<<<<< Updated upstream
+        if control_variate == "european_at_exercise" and cv_two_path:
+=======
+        if control_variate == "european_at_exercise" and cv_oos:
+>>>>>>> Stashed changes
+            time_grid_fit, paths_fit = self.process.simulate(T, n_steps, n_paths, rng,use_antithetic=use_antithetic,simulation_times=simulation_times)
+            n_steps_fit = len(time_grid_fit) - 1
+            T_fit = float(time_grid_fit[-1])
+
+            if exercise_times is not None:
+                out_of_range = [tau for tau in exercise_times if tau < 0 or tau > T_fit]
+                if out_of_range:
+                    raise ValueError(f"exercise_times {out_of_range} outside [0, {T_fit}].")
+                exercise_set_fit = {
+                    int(np.argmin(np.abs(time_grid_fit - tau)))
+                    for tau in exercise_times
+                }
+            else:
+                exercise_set_fit = None
+
+            fitted_betas = {}
+            dsc_cashflow_fit = self.payoff_function(paths_fit[:, -1])
+            dfs_fit = np.exp(-self.process.r * np.diff(time_grid_fit))
+
+<<<<<<< Updated upstream
+=======
+            # need two loops: one for fitted beta, another for out-of-sample stopping time
+            # first loop: generating fitted beta
+>>>>>>> Stashed changes
+            for t in range(n_steps_fit - 1, -1, -1):
+                dsc_cashflow_fit *= dfs_fit[t]
+
+                if exercise_set_fit is not None and t not in exercise_set_fit:
+                    continue
+
+                immediate_payoff_fit = self.payoff_function(paths_fit[:, t])
+                itm_mask_fit = immediate_payoff_fit > 0
+
+                if not np.any(itm_mask_fit):
+                    continue
+
+                if create_features is None and hasattr(self.payoff_function, "strike"):
+                    strike = self.payoff_function.strike
+                    X_fit = paths_fit[itm_mask_fit, t] / strike
+                    A_fit = self.basis_function.design_matrix(X_fit)
+
+                elif create_features is None:
+                    X_fit = paths_fit[itm_mask_fit, t]
+                    A_fit = self.basis_function.design_matrix(X_fit)
+
+                else:
+                    features_fit = create_features(paths_fit[itm_mask_fit, t, :])
+                    A_fit = self.basis_function.design_matrix(features_fit)
+
+                y_fit = dsc_cashflow_fit[itm_mask_fit]
+
+                beta_fit, *_ = np.linalg.lstsq(A_fit, y_fit, rcond=None)
+                fitted_betas[t] = beta_fit
+
+                continuation_fit = np.zeros_like(immediate_payoff_fit, dtype=np.float64)
+                continuation_fit[itm_mask_fit] = A_fit @ beta_fit
+
+                exercise_mask_fit = immediate_payoff_fit > continuation_fit
+                dsc_cashflow_fit = np.where(exercise_mask_fit,immediate_payoff_fit,dsc_cashflow_fit)
+            
+            cv_exercise_time = np.full(n_paths, T, dtype=np.float64)
+            cv_exercise_spot = paths[:, -1].copy()
+
+<<<<<<< Updated upstream
+=======
+            # second loop: generating out-of-sample stopping time
+>>>>>>> Stashed changes
+            for t in range(n_steps - 1, -1, -1):
+
+                if exercise_set is not None and t not in exercise_set:
+                    continue
+
+                immediate_payoff = self.payoff_function(paths[:, t])
+                itm_mask = immediate_payoff > 0
+
+                if not np.any(itm_mask):
+                    continue
+
+                cv_continuation = np.zeros_like(immediate_payoff, dtype=np.float64)
+
+                if create_features is None and hasattr(self.payoff_function, "strike"):
+                    strike = self.payoff_function.strike
+                    X_cv = paths[itm_mask, t] / strike
+                    A_cv = self.basis_function.design_matrix(X_cv)
+
+                elif create_features is None:
+                    X_cv = paths[itm_mask, t]
+                    A_cv = self.basis_function.design_matrix(X_cv)
+
+                else:
+                    features_cv = create_features(paths[itm_mask, t, :])
+                    A_cv = self.basis_function.design_matrix(features_cv)
+
+                if fitted_betas is not None and t in fitted_betas:
+                    cv_continuation[itm_mask] = A_cv @ fitted_betas[t]
+                else:
+                    cv_continuation[itm_mask] = 0.0
+
+                cv_exercise_mask = immediate_payoff > cv_continuation
+
+                cv_exercise_time[cv_exercise_mask] = time_grid[t]
+                cv_exercise_spot[cv_exercise_mask] = paths[cv_exercise_mask, t]
+        
         # Optional European control variate
         if control_variate is not None:
-            if paths.ndim != 2 or "Quanto" in self.process.__class__.__name__:
-                print("Warning: Control variate is currently only implemented for standard single-asset options. Skipping control variate.")
+            if create_features is not None or paths.ndim != 2:
+                print("Warning: Control variate is currently only implemented for single-asset options without custom features. Skipping control variate.")
                 if cache:
                     self._cached_cashflow = cashflow_matrix
                 return price, stderr
@@ -208,11 +323,27 @@ class LeastSquaresMonteCarlo:
 
             elif control_variate == "european_at_exercise":
                 # Rasmussen (2005) eq. (10)
-                remaining_T = np.maximum(T - exercise_time, 0.0)
+<<<<<<< Updated upstream
+                if cv_two_path:
+=======
+                # if using cv_oos, record two stopping time for CV
+                if cv_oos:
+>>>>>>> Stashed changes
+                    tau_for_cv = cv_exercise_time
+                    spot_for_cv = cv_exercise_spot
+                else:
+                    tau_for_cv = exercise_time
+                    spot_for_cv = exercise_spot
+
+                remaining_T = np.maximum(T - tau_for_cv, 0.0)
+<<<<<<< Updated upstream
+=======
+
+>>>>>>> Stashed changes
                 euro_value_at_tau = bs_european_price(
-                    exercise_spot, K, r, q, sigma, remaining_T, option_type
+                    spot_for_cv, K, r, q, sigma, remaining_T, option_type
                 )
-                y_samples = np.exp(-r * exercise_time) * euro_value_at_tau
+                y_samples = np.exp(-r * tau_for_cv) * euro_value_at_tau
                 y_expectation = bs_european_price(S0, K, r, q, sigma, T, option_type)
             
             else:
@@ -223,10 +354,24 @@ class LeastSquaresMonteCarlo:
             if cache:
                 self._cached_cv_beta = beta
                 self._cached_euro_closed = y_expectation
-                self._cached_exercise_time = exercise_time
-                self._cached_exercise_spot = exercise_spot
                 self._cached_paths = paths
                 self._cached_cv_samples = y_samples
+                if control_variate == "european_at_exercise":
+                    self._cached_exercise_time = exercise_time
+                    self._cached_exercise_spot = exercise_spot
+
+<<<<<<< Updated upstream
+                    if cv_two_path:
+                        self._cached_cv_exercise_time = cv_exercise_time
+                        self._cached_cv_exercise_spot = cv_exercise_spot
+                        self._cached_fitted_betas = fitted_betas
+
+=======
+                    if cv_oos:
+                        self._cached_cv_exercise_time = cv_exercise_time
+                        self._cached_cv_exercise_spot = cv_exercise_spot
+                        self._cached_fitted_betas = fitted_betas
+>>>>>>> Stashed changes
 
         # Cache cash flow matrix only if requested
         if cache:
@@ -234,8 +379,6 @@ class LeastSquaresMonteCarlo:
 
         return price, stderr
     
-
-
     def get_cashflow(self) -> np.ndarray:
         """
         Retrieve the cached cashflow matrix from the last pricer() call.
@@ -282,7 +425,7 @@ class LeastSquaresMonteCarlo:
             price: float, estimated option value at t=0.
             stderr: float, standard error of the Monte Carlo estimate.
         """
-        # Setup: time grid, simulated paths, spreads (e.g., S_t = CP_t - P_t if put), discount factors
+        # Setup: time grid, simulated paths, spreads (S_t = CP_t - P_t), discount factors
         time_grid, paths = self.process.simulate(T, n_steps, n_paths, rng, use_antithetic=use_antithetic, simulation_times=simulation_times)
         n_steps = len(time_grid) - 1
         T = float(time_grid[-1])
