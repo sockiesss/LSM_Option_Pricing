@@ -41,7 +41,8 @@ def bs_european_price(S0, K: float, r: float, q: float,
         bs = K * np.exp(-r * safe_T) * norm.cdf(-d2) - S0 * np.exp(-q * safe_T) * norm.cdf(-d1)
 
     result = np.where(T <= 0, at_expiry, np.where(sigma <= 0, sigma_zero, bs))
-    return float(result) if scalar else result
+    # return float(result) if scalar else result
+    return result.item() if scalar else result
 
 
 def european_discounted_payoff(ST: np.ndarray, K: float, r: float, T: float,

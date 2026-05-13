@@ -7,10 +7,11 @@ The primary focus is on enhancing the standard Longstaff-Schwartz (2001) method 
 
 ## Features
 * **Core LSM Algorithm**: Backward induction with regression-based continuation value estimation.
+* **Advanced Stochastic Processes**: Simulates multi-dimensional correlated assets (GBM), Quanto asset dynamics, and path-dependent stochastic interest rates (Vasicek/Hull-White dynamics for domestic and foreign rates).
+* **Flexible Payoffs**: Vanilla puts/calls, max calls, swing options, and Quanto options (supporting both fixed FX and stochastic rates).
 * **Variance and Bias Reduction**: Antithetic variates, control variates (European options sampled at maturity or exercise times), and Leave-One-Out (LOO) cross-validation to eliminate look-ahead bias.
 * **Regression Bases**: Laguerre polynomials and power polynomials for basis functions.
 * **Multi-Asset Support**: Handles correlated assets via Cholesky decomposition.
-* **Flexible Payoffs**: Vanilla puts/calls, max calls, swing options.
 * **Benchmarks**: Comparison against Binomial Trees, Finite Difference Methods (QuantLib), and Black-Scholes.
 * **Performance**: Optimized for speed and accuracy with configurable paths and steps.
 
@@ -34,10 +35,10 @@ The primary focus is on enhancing the standard Longstaff-Schwartz (2001) method 
 │   └── tests.ipynb             # Benchmark tests and advanced payoffs
 ├── tests/
 │   ├── test_lsm.py             # Pytest suite for core LSM functionality
-│   └── test_quanto.py          # Pytest suite for Quanto pricing and stochastic rates
+│   ├── test_quanto.py          # Pytest suite for Quanto pricing and stochastic rates
+│   └── test_swing.py           # Pytest suite for Swing option constraints and pricing
 ├── pyproject.toml              # Build metadata and dependencies
 └── README.md
-
 ```
 
 
@@ -88,6 +89,7 @@ Prices the option using the standard Least Squares Monte Carlo algorithm. Evalua
 | `rng` | `np.random.Generator` | `None` | NumPy random number generator instance for reproducible paths. |
 | `use_antithetic` | `bool` | `False` | If `True`, uses antithetic variates for variance reduction. |
 | `control_variate` | `str` | `None` | European option control variate method. Options: `'european_at_maturity'`, `'european_at_exercise'`, or `None`. |
+| `cv_oos` | `bool` | `True` | If True, uses out-of-sample path estimation for the European CV to eliminate look-ahead bias and over-fitting during stopping time determination.|
 | `create_features` | `Callable` | `None` | Function to create custom basis features for regression (e.g., cross-terms for multi-asset or Quanto options). |
 | `cache` | `bool` | `False` | If `True`, caches the cash flow matrix allowing retrieval via `get_cashflow()`. |
 | `exercise_times` | `array-like` | `None` | Specific exercise times for Bermudan options (e.g., `[0.25, 0.5, 1.0]`). If `None`, assumes an American option (exercisable at every step). |
